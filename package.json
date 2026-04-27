@@ -1,0 +1,9 @@
+{
+  "name": "pi-workflow-skills",
+  "version": "0.1.0",
+  "description": "Agentic workflow skills for pi: investigate, spec, plan, orchestrate, implement, and review",
+  "keywords": ["pi-package"],
+  "pi": {
+    "skills": ["./skills"]
+  }
+}
