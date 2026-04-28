@@ -1,6 +1,6 @@
 ---
 name: planner
-description: Produces a wave-based implementation plan from investigation findings. Deploys parallel opus-max planners each attacking a different architectural angle, then an opus-max unifier that merges them into PROGRESS.md and per-step files. Each step has layered context, implementation details, and observable/testable acceptance criteria. Use when the user asks to plan, create an implementation plan, write step files, or says do not implement. Also use proactively when a task requires 3 or more behavior-changing steps, multiple repos, or parallel execution.
+description: Turns investigation findings into a wave-based PROGRESS.md execution plan with per-step files, layered context, and testable acceptance criteria. Use after investigation, before orchestration. Also use proactively for tasks with 3+ behavior-changing steps or parallel execution.
 ---
 
 # Planner Skill

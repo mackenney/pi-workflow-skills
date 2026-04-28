@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: Executes a wave-based implementation plan by reading PROGRESS.md, dispatching workers in parallel batches per wave, and running a worker-reviewer loop per step with a configurable fuse. Manages the execute-verify cycle, escalates blockers to the user, and tracks progress via git commits and PROGRESS.md updates. Use when the user says execute the plan, run it, implement the steps, you are the orchestrating agent, or hands off a PROGRESS.md to be executed.
+description: Executes a PROGRESS.md plan by dispatching worker-reviewer pairs in parallel waves, managing the verify cycle, escalating blockers, and tracking progress via git commits. Final execution step in the investigate→spec→plan→orchestrate pipeline.
 ---
 
 # Orchestrator Skill

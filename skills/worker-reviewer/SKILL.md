@@ -1,7 +1,7 @@
 ---
 name: worker-reviewer
-description: Defines the adversarial Worker and Reviewer pair used inside the orchestrator loop. The Worker implements exactly what a step file specifies, self-validates against acceptance criteria, and reports concisely. The Reviewer verifies without reimplementing, returning structured pass or fail with specific file and line references. Together they form the execute-test-review-verify loop with a max-iteration fuse and escalation path.
----
+description: Internal roles loaded by the orchestrator skill. Defines the adversarial Worker (implements a step, self-validates) and Reviewer (verifies without reimplementing, returns structured pass/fail) pair that forms the execute-verify loop with a max-iteration fuse.
+disable-model-invocation: true
 
 # Worker + Reviewer Skill
 

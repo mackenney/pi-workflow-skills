@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: "Performs comprehensive code reviews using competitive multi-agent analysis. Reviews uncommitted changes, branches, or GitHub PRs — deploying three competing reviewers to find meaningful issues, then synthesizes findings into actionable feedback reported inline. Optionally posts to GitHub or saves to a markdown file. Trigger phrases: review this code, review the PR, code review, review my changes, review this branch, do a code review, check this code, review before merge, what issues do you see, thorough review, competitive review. Use when changes are ready for critique. Do NOT use mid-edit when changes are intentionally incomplete."
+description: Performs competitive multi-agent code review on uncommitted changes, branches, or GitHub PRs. Synthesizes findings from three independent reviewers into actionable inline feedback; optionally posts to GitHub or saves to a file. Use when changes are complete and ready for critique.
 ---
 
 # Code Reviewer Skill

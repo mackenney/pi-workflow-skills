@@ -1,6 +1,6 @@
 ---
 name: specifier
-description: "Produces or updates a spec file from investigation findings. Writes the behavioral contract of a package or component using RFC 2119 keywords — what it MUST, SHOULD, and MAY do, the protocols it defines for implementors, and what is explicitly out of scope. Does not describe implementation. Does not mention consumers or wrappers. The output is a permanent codebase artifact that informs the planner and serves as the oracle for code review. Trigger phrases: write a spec, create a spec, draft a spec, update the spec, spec this out, define the contract, what should the spec say, before we plan let's spec, align on the contract."
+description: Writes and maintains spec documents — behavioral contracts, format/criteria definitions, and standards files (SPEC.md, *.spec.md). Covers what a component MUST/SHOULD/MAY do, its protocols, and explicit out-of-scope items. Use when asked to write, update, or reason about any spec or standards document; also sits between investigation and planning in the pipeline.
 ---
 
 # Specifier Skill

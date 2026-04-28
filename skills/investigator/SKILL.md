@@ -1,6 +1,6 @@
 ---
 name: investigator
-description: "Deploys parallel scout agents to investigate codebases, find root causes, audit systems, or research questions before planning or implementing. Use when the user asks to investigate, research, audit, find root cause, dig into something, or deploys scouts. Scouts cover different subsystems in parallel; competitive scouts run the same task independently for diverse perspectives. Produces a structured report: root cause analysis, findings, alternatives proposal, or audit summary. Load this skill before dispatching any scout agents."
+description: Gathers ground-truth findings before planning or implementing — deploys parallel scout agents across subsystems and produces a structured report (root cause analysis, findings, alternatives). First step in the investigate→spec→plan→orchestrate pipeline.
 ---
 
 # Investigator Skill
