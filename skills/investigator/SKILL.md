@@ -66,6 +66,8 @@ subagent(tasks: [
 ])
 ```
 
+**Context mode:** Default is fresh — scouts receive specific questions and an explicit output path in their task string. Use `context: "fork"` when the parent session has done significant preparation (deep codebase exploration, prior findings synthesis) that all scouts need as shared baseline and would be expensive to re-serialize into every task string. For independent competitive scouts that must reach unbiased conclusions, always use fresh regardless of preparation.
+
 Use `agent: "worker"` (default worker agent) for scouts unless you have a specialized research agent. For web research tasks, use a `researcher` agent if available.
 
 **Model selection for scouts:**

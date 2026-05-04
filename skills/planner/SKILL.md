@@ -92,6 +92,8 @@ subagent(tasks: [
 ], worktree: false)
 ```
 
+**Context mode:** Default is fresh — investigation findings, the assigned angle, and the output path are passed explicitly in the task string. Use `context: "fork"` when the parent session has done substantial preparation (architecture exploration, deep investigation synthesis) that all planners need as shared baseline and would be expensive to re-serialize into every task. Do not fork when planner angles are designed to be independent and unbiased — inherited session history can contaminate divergent planning.
+
 **Standard angles to assign:**
 
 | Angle | Focus |
@@ -114,6 +116,8 @@ After planners complete, dispatch a single unifier with all plan files as inputs
 
 ```
 subagent(agent: "worker", task: <unifier-task>, model: "anthropic/claude-opus-4-6")
+
+**Context mode:** Fork the unifier when the parent session holds significant context that the unifier needs to reconcile competing plans correctly (e.g., architectural constraints established during investigation). Use fresh when all required context is captured in the plan files themselves.
 ```
 
 The unifier produces the final PROGRESS.md and all step files.

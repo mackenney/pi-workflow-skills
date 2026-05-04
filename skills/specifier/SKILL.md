@@ -15,6 +15,8 @@ does not do. You write for implementors and future maintainers, not for the curr
 - Not a README (no setup instructions, no usage examples)
 - Not an ADR (no "we decided X because Y" rationale — that belongs in `decisions/`)
 - Not a consumer's integration guide (no mention of how the calling layer uses this component)
+- Not a technology brief (language, library, framework, and tooling choices belong to the Planner)
+- Not a dependency integration guide (external systems are described by what you require FROM them, not how to wire them in)
 
 ## Boundary Rule (Non-Negotiable)
 
@@ -26,6 +28,18 @@ does not do. You write for implementors and future maintainers, not for the curr
 
 Those belong in the consumer's spec. The dependency direction is always one-way:
 the consumer spec may reference the package spec; the package spec is self-contained.
+
+## Implementation Neutrality
+
+Specs SHOULD be as implementation-neutral as possible. Avoid naming languages,
+libraries, frameworks, or tooling. When a technology reference is unavoidable because
+it is a genuine domain constraint (a mandated protocol, a required standard, a legally-
+required algorithm, an externally-imposed integration format), include it and annotate why:
+
+> _(domain constraint: required by <reason>)_
+
+Everything else — how to store data, what runtime to use, which libraries to call —
+belongs to the Planner, not the spec.
 
 ## When to Create vs Update
 
@@ -77,6 +91,11 @@ You need before writing:
 
 If no investigation has run yet: stop and run the Investigator first.
 
+Before transcribing investigation findings into the spec, filter them: strip
+implementation-specific facts (file paths, class names, library names, schema names,
+ORM constructs). Translate what remains into behavioral terms. Only what observable
+behavior requires survives into the spec.
+
 ### Step 4: Resolve the boundary
 
 Explicitly answer before writing:
@@ -104,6 +123,12 @@ Structure (adapt as needed — not every section is mandatory for every componen
 ## Core Mental Model
 <Key abstractions and how they relate. Concepts, not implementation.>
 
+## External Dependencies
+<For each external system or capability this component requires:>
+<- Role/capability — what it provides (prefer capability description over product name)>
+<- What this component REQUIRES from it — the behavioral contract>
+<- What this component MUST NOT assume about its internals>
+
 ## Protocols / Contracts
 <For each Protocol or interface this component defines:>
 <- What it represents>
@@ -122,8 +147,10 @@ Structure (adapt as needed — not every section is mandatory for every componen
 <Decisions not yet made. Each item blocks planning until resolved.>
 <Omit this section entirely if there are none.>
 
-## Acceptance Criteria
-<Commands verifying the component's invariants hold. Scoped to this component only.>
+## Verifiable Conditions
+<Observable, falsifiable conditions that confirm the invariants hold. Expressed as
+behavioral assertions ("given X input, Y output is produced"), not as specific commands,
+test-runner invocations, or language-specific test cases.>
 ```
 
 ### Step 6: Validate before writing
@@ -133,6 +160,9 @@ Structure (adapt as needed — not every section is mandatory for every componen
 - [ ] Is every MUST statement falsifiable? → If not, sharpen it.
 - [ ] Are there implicit decisions from investigation that are missing? → Add them.
 - [ ] Do Open Questions block planning? → Surface them before proceeding.
+- [ ] Does the spec name a specific language, library, framework, or tooling that is not a domain constraint? → Remove.
+- [ ] Does any section describe how to integrate an external dependency rather than what is required from it? → Rewrite as a behavioral contract.
+- [ ] Does the spec contain file paths, env var names, config keys, or schema names that are not part of the behavioral contract? → Remove.
 
 ### Step 7: Determine spec location
 
@@ -199,6 +229,8 @@ tempted to MUST everything, you're writing implementation instructions, not a sp
 | Implementation steps for a feature | Planner step files (ephemeral, removed after) |
 | Setup, configuration, running | README |
 | Consumer integration details | Consumer's own spec |
+| Technology choices (language, framework, library, tooling) | Planner |
+| How to wire in an external dependency | Planner |
 
 ---
 

@@ -195,6 +195,8 @@ PR Status: Open, 1 review (changes requested), 3 CI checks failing
 
 **Spawn three parallel review agents using Task tool:**
 
+**Context mode:** All three reviewers and the synthesis agent run fresh (the default — do not pass `context: "fork"`). Competitive review requires independent perspectives; forking would give all three reviewers the same parent session history, biasing them identically and defeating the competitive structure. The diff and purpose are passed explicitly in each task string.
+
 Use the `Task` tool with `subagent_type: "general-purpose"` to create three independent reviewers.
 
 **Competitive prompt template for each reviewer:**

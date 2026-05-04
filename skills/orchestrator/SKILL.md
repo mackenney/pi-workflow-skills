@@ -129,6 +129,8 @@ If any step in wave depends on another step in the same wave:
   → the rest of the wave can run in parallel around them
 ```
 
+
+**Context mode:** Default is fresh — all context a worker needs is passed explicitly in the task string (project path, step file, acceptance criteria, git instructions). Use `context: "fork"` when the orchestrator has built up significant shared context during pre-flight or wave execution that multiple workers would all need — forking avoids re-serializing that context into every task string. Do not fork reviewers: they must judge the commit independently and should not be influenced by orchestration notes or prior wave history.
 ---
 
 ## Worker Task Anatomy
