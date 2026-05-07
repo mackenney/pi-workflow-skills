@@ -61,12 +61,12 @@ Skills in this repo form a pipeline. Descriptions should reflect the ordering:
 | specifier | 2 — spec | findings | behavioral contract (SPEC.md) |
 | planner | 3 — plan | findings / spec | PROGRESS.md + step files |
 | orchestrator | 4 — orchestrate | PROGRESS.md | completed implementation |
-| code-reviewer | standalone | changes/branch/PR | review feedback |
+| code-reviewer | standalone / post-orchestrate | changes/branch/PR | review feedback |
+| fact-checker | standalone / post-review / post-orchestrate | any document with claims | CONFIRMED/REFUTED/UNVERIFIABLE verdicts with evidence |
 
 `worker-reviewer` is **orchestrator-internal**: set `disable-model-invocation: true`
 and describe it as "internal roles loaded by the orchestrator skill." It must
 not appear in the user-facing skill catalog.
-
 ## Examples
 
 **Good:**
