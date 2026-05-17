@@ -408,15 +408,13 @@ If this step needs to be reverted: `git revert <describe what commit to revert>`
 
 | Role | Model | Rationale |
 |------|-------|-----------|
-| Scouts (pre-investigation) | haiku / default | Fast, cheap, code reading |
-| Planners | opus-max | Complex reasoning, architectural tradeoffs |
-| Unifier | opus-max (with thinking if available) | Synthesis requires holding multiple conflicting plans in context |
-| Unifier alternative | sonnet-high-thinking | When opus-max not available |
+| Scouts (pre-investigation) | default (no override) | Fast, cheap, code reading |
+| Planners | `anthropic/claude-opus-4-6` | Complex reasoning, architectural tradeoffs |
+| Unifier | `anthropic/claude-opus-4-6` with thinking | Synthesis requires holding multiple conflicting plans in context |
 
 **Why opus for planners:** Planning requires evaluating architectural tradeoffs, anticipating downstream effects, and writing acceptance criteria precise enough that a different agent can verify them. Sonnet produces thinner plans that miss edge cases. The cost of a wrong plan is re-doing implementation work — opus pays for itself.
 
-**Observed from sessions:** Explicitly specifying "opus max thinking" for planning agents consistently produces step files with tighter acceptance criteria. Both parallel planners and the unifier benefit from the higher reasoning budget. Workers execute the resulting steps without clarification.
-
+**Observed from sessions:** Explicitly specifying opus with thinking for planning agents consistently produces step files with tighter acceptance criteria. Both parallel planners and the unifier benefit from the higher reasoning budget. Workers execute the resulting steps without clarification.
 ---
 
 ## Common Failures to Avoid

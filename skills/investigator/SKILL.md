@@ -71,9 +71,8 @@ subagent(tasks: [
 Use `agent: "worker"` (default worker agent) for scouts unless you have a specialized research agent. For web research tasks, use a `researcher` agent if available.
 
 **Model selection for scouts:**
-- Code exploration: default model (fast, cheap)
-- Web research: default model
-- Deep analysis requiring reasoning: claude-sonnet or equivalent
+- Do NOT pass an explicit `model:` override. Let `settings.json` agentOverrides govern the worker model.
+- If you must override: use `anthropic/claude-sonnet-4-6` for standard scouts, `anthropic/claude-opus-4-6` for deep analysis.
 
 ### Step 3: Optional — Competitive Scouts
 
