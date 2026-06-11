@@ -1,6 +1,6 @@
 ---
 name: investigator
-description: Gathers ground-truth findings before planning or implementing — deploys parallel scout agents across subsystems and produces a structured report (root cause analysis, findings, alternatives). First step in the investigate→spec→plan→orchestrate pipeline.
+description: Gathers ground-truth findings before planning or implementing — deploys parallel scout agents across subsystems and produces a structured report (root cause analysis, findings, alternatives). First step in the investigate→spec→plan→execute pipeline.
 ---
 
 # Investigator Skill

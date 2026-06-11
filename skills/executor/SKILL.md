@@ -1,21 +1,18 @@
 ---
-name: orchestrator
-description: Executes a PROGRESS.md plan by dispatching worker-reviewer pairs in parallel waves, managing the verify cycle, escalating blockers, and tracking progress via git commits. Final execution step in the investigate→spec→plan→orchestrate pipeline.
+name: executor
+description: Executes a PROGRESS.md plan by dispatching worker-reviewer pairs in parallel waves, managing the verify cycle, escalating blockers, and tracking progress via git commits. Final execution step in the investigate→spec→plan→execute pipeline.
 ---
 
-# Orchestrator Skill
+# Executor Skill
 
-You are playing the **Orchestrator** role. Your job is to execute a plan by dispatching workers and reviewers, tracking progress, handling failures, and reporting to the user. You coordinate — you do not implement.
+You are playing the **Executor** role. Your job is to execute a plan by dispatching workers and reviewers, tracking progress, handling failures, and reporting to the user. You coordinate — you do not implement.
 
 ## Trigger Phrases
 
 Activate this skill when the user says things like:
-- "execute the plan", "run it", "implement the steps"
-- "start the orchestrator", "deploy agents to implement"
+- "execute the plan", "run it", "implement the steps", "executor"
+- "start the executor", "deploy agents to implement"
 - "read the plan and run it"
-- "you are the orchestrating agent"
-- "track progress in git"
-- "deploy parallel/sequential agents to implement each change"
 
 ---
 
@@ -105,7 +102,7 @@ Never re-run completed steps. If a completed step's output is missing (e.g., com
 - Steps that touch entirely different files (no overlap)
 - Steps that are independent by the dependency table in PROGRESS.md
 
-**Max parallel workers:** 5-6 in a single batch. Beyond this, coordination overhead and context window pressure on the orchestrator outweigh the speed gains.
+**Max parallel workers:** 5-6 in a single batch. Beyond this, coordination overhead and context window pressure on the executor outweigh the speed gains.
 
 ### Sequential rules — run these ONE AT A TIME
 
@@ -130,7 +127,7 @@ If any step in wave depends on another step in the same wave:
 ```
 
 
-**Context mode:** Default is fresh — all context a worker needs is passed explicitly in the task string (project path, step file, acceptance criteria, git instructions). Use `context: "fork"` when the orchestrator has built up significant shared context during pre-flight or wave execution that multiple workers would all need — forking avoids re-serializing that context into every task string. Do not fork reviewers: they must judge the commit independently and should not be influenced by orchestration notes or prior wave history.
+**Context mode:** Default is fresh — all context a worker needs is passed explicitly in the task string (project path, step file, acceptance criteria, git instructions). Use `context: "fork"` when the executor has built up significant shared context during pre-flight or wave execution that multiple workers would all need — forking avoids re-serializing that context into every task string. Do not fork reviewers: they must judge the commit independently and should not be influenced by executor notes or prior wave history.
 ---
 
 ## Worker Task Anatomy
@@ -168,7 +165,7 @@ Do not report partial completion. Either all acceptance criteria pass, or it's a
 **Do not:**
 - Include the full PROGRESS.md in every worker task
 - Include step files for other waves
-- Include your orchestrator notes or failure history (unless directly relevant)
+- Include your executor notes or failure history (unless directly relevant)
 
 **Observed from sessions:** The agent-rules refactor session passed exactly the phase items verbatim from the master plan to each worker, plus the acceptance criteria (build+test pass). Workers executed cleanly without asking clarifying questions. Context was minimal but complete.
 
@@ -243,7 +240,7 @@ For each step:
 
 **Max iterations:** 2-3 per step. Beyond this, the step file itself likely has a problem (wrong acceptance criteria, missing context, incorrect implementation target). Fix the step file or escalate — do not spin workers indefinitely.
 
-**Observed from sessions:** The agent-rules session used `CHAIN[worker → worker → code-reviewer]` for phases requiring iteration. The orchestrator self-diagnosed failures (mock format bug, path bug) between iterations rather than blindly retrying.
+**Observed from sessions:** The agent-rules session used `CHAIN[worker → worker → code-reviewer]` for phases requiring iteration. The executor self-diagnosed failures (mock format bug, path bug) between iterations rather than blindly retrying.
 
 ---
 
@@ -369,9 +366,9 @@ Stop and escalate immediately if:
 
 **Up from workers:** Completion status, commit hash, critical observations only
 
-**Stays local (orchestrator only):** Wave map, dependency table, failure history, patterns across multiple worker failures, your running notes
+**Stays local (executor only):** Wave map, dependency table, failure history, patterns across multiple worker failures, your running notes
 
-**Never down to workers:** Full PROGRESS.md, other workers' tasks, your orchestrator notes, previous waves' step files
+**Never down to workers:** Full PROGRESS.md, other workers' tasks, your executor notes, previous waves' step files
 
 **Context rotation:** As waves progress and context grows, drop old wave information. You only need the current wave's step files active. Previous waves are captured in git — you don't need them in context.
 

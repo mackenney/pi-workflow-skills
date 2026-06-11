@@ -1,6 +1,6 @@
 ---
 name: fact-checker
-description: Verifies claims in any document — code reviews, investigation reports, plans, or specs — against source code, experiments, docs, git history, and web. Outputs CONFIRMED/REFUTED/UNVERIFIABLE verdicts with evidence. Use standalone or after code-reviewer/orchestrator.
+description: Verifies claims in any document — code reviews, investigation reports, plans, or specs — against source code, experiments, docs, git history, and web. Outputs CONFIRMED/REFUTED/UNVERIFIABLE verdicts with evidence. Use standalone or after code-reviewer/executor.
 ---
 
 # Fact-Checker Skill
@@ -322,6 +322,56 @@ When the input is a code review report:
 
 ---
 
+## Special Mode: Thorough
+
+Activated by the modifier word **thorough** — e.g. "thorough fact-checker", "fact-check thorough", "thorough factcheck".
+
+Thorough mode doubles the verification redundancy per cluster to reduce error rate. Use when the stakes of a missed or wrong verdict are high.
+
+### Dispatch
+
+For each cluster, dispatch **two** parallel checker agents instead of one. Give both agents the same claims but use slightly different prompt wording — vary the framing, not the facts — so they approach the evidence independently.
+
+Agent A prompt framing: direct ("Verify whether each of the following claims is true")
+Agent B prompt framing: adversarial ("Assume each claim may be wrong. Find evidence that contradicts or confirms it")
+
+Both write to separate output files. Wait for both before synthesizing.
+
+### Agreement Rules
+
+For each claim, compare the two verdicts:
+
+| Agent A | Agent B | Outcome |
+|---------|---------|----------|
+| CONFIRMED | CONFIRMED | ✅ CONFIRMED — pass through |
+| REFUTED | REFUTED | ❌ REFUTED — pass through |
+| UNVERIFIABLE | UNVERIFIABLE | ❓ UNVERIFIABLE — pass through |
+| CONFIRMED | REFUTED (or vice versa) | ⚡ DISPUTED — escalate to tiebreaker |
+| Any | PARTIAL (or vice versa) | ⚡ DISPUTED — escalate to tiebreaker |
+| Any | UNVERIFIABLE (when other has verdict) | Treat as DISPUTED — escalate |
+
+### Tiebreaker
+
+For each DISPUTED claim, dispatch a single **opus** tiebreaker agent (`anthropic/claude-opus-4-6`). Pass it:
+- The claim
+- Both checker outputs in full (verdicts + evidence)
+- Instruction: "Break the tie. Read the evidence from both agents, then independently verify the claim using the highest available evidence tier. Return a single verdict with your own evidence."
+
+The tiebreaker verdict is final.
+
+### Synthesis
+
+Synthesize as normal (Step 5), using:
+- Agreed verdicts from the two-agent pairs
+- Tiebreaker verdicts for disputed claims
+
+Add a line to the report header:
+```
+Mode: Thorough — 2 agents per cluster, N disputes resolved by tiebreaker
+```
+
+---
+
 ## Quality Checks Before Reporting
 
 - [ ] Interpretation stated at top when input was freeform or ambiguous
@@ -342,9 +392,9 @@ code-reviewer → produces findings → fact-checker verifies each finding's acc
 ```
 Catches: misread diffs, incorrect file:line citations, overstated severity.
 
-**After `orchestrator` (spec compliance):**
+**After `executor` (spec compliance):**
 ```
-orchestrator → implements plan → fact-checker checks implementation against spec MUST/MUST NOT
+executor → implements plan → fact-checker checks implementation against spec MUST/MUST NOT
 ```
 Catches: missed requirements, partial implementations, spec drift.
 
@@ -356,7 +406,7 @@ Catches: scout misreadings, incorrect assumptions fed into the planner.
 
 **Full pipeline:**
 ```
-investigator → specifier → planner → orchestrator → code-reviewer → fact-checker
+investigator → specifier → planner → executor → code-reviewer → fact-checker
 ```
 The fact-checker is the final quality gate before reporting results or merging.
 

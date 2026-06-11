@@ -1,20 +1,17 @@
 ---
 name: planner
-description: Turns investigation findings into a wave-based PROGRESS.md execution plan with per-step files, layered context, and testable acceptance criteria. Use after investigation, before orchestration. Also use proactively for tasks with 3+ behavior-changing steps or parallel execution.
+description: Turns investigation findings into a wave-based PROGRESS.md execution plan with per-step files, layered context, and testable acceptance criteria. Use after investigation, before execution. Invoke as 'planner' for normal multi-angle mode or 'quick plan'/'simple plan' for a single-pass plan.
 ---
 
 # Planner Skill
 
-You are playing the **Planner** role. Your job is to produce an execution-ready plan: a PROGRESS.md master file and per-step files that an Orchestrator can dispatch without ambiguity.
+You are playing the **Planner** role. Your job is to produce an execution-ready plan: a PROGRESS.md master file and per-step files that an Executor can dispatch without ambiguity.
 
 ## Trigger Phrases
 
-Activate this skill when the user says things like:
-- "plan this", "create an implementation plan", "design the approach"
-- "build a plan before we implement", "write step files"
-- "use opus max thinking", "detailed plan files"
-- "don't implement, just plan"
-- "create a PROGRESS.md"
+Activate this skill when the user says:
+- "plan this", "planner", "write step files", "create a PROGRESS.md"
+- "quick plan", "simple plan" — activates Simple Mode (see Modes below)
 
 ## When to Plan vs. Implement Directly
 
@@ -77,7 +74,26 @@ Planners given unverified assumptions produce plans that break at step 1.
 
 ---
 
-## Step-by-Step Workflow
+## Modes
+
+### Normal Mode (default)
+
+Dispatches 2–4 parallel planner agents at different angles, then a `claude-fable-5` unifier. Use for multi-step, multi-file, or high-risk plans. Activated by bare "plan" / "planner" invocations.
+
+### Simple Mode
+
+A single planning pass with `claude-fable-5`. Use when the user says **"quick plan"** or **"simple plan"**. Skips multi-angle dispatch. Produces PROGRESS.md and step files in one pass.
+
+Simple mode dispatch:
+```
+subagent(agent: "worker", task: <simple-planner-task>, model: "anthropic/claude-fable-5")
+```
+
+The simple planner receives the same inputs as normal-mode planners (problem statement, verified facts, spec constraints) but has no angle constraint — it synthesizes a complete plan in one pass. The validation step (Step 3) still applies.
+
+---
+
+## Step-by-Step Workflow (Normal Mode)
 
 ### Step 1: Dispatch Parallel Opus Planners (2-4 agents)
 
@@ -115,7 +131,7 @@ Tell each planner which angles the other planners are covering so they don't dup
 After planners complete, dispatch a single unifier with all plan files as inputs.
 
 ```
-subagent(agent: "worker", task: <unifier-task>, model: "anthropic/claude-opus-4-6")
+subagent(agent: "worker", task: <unifier-task>, model: "anthropic/claude-fable-5")
 
 **Context mode:** Fork the unifier when the parent session holds significant context that the unifier needs to reconcile competing plans correctly (e.g., architectural constraints established during investigation). Use fresh when all required context is captured in the plan files themselves.
 ```
@@ -288,7 +304,7 @@ In Progress | Blocked | Complete
 | step-01 | models.py | — | step-03 |
 | step-02 | serializers.py | — | step-04 |
 
-## Orchestrator Protocol
+## Executor Protocol
 1. Read this file to identify current wave
 2. Dispatch all steps in current wave in parallel (see wave map)
 3. After each step: dispatch reviewer agent (see step file for reviewer instructions)
@@ -410,7 +426,8 @@ If this step needs to be reverted: `git revert <describe what commit to revert>`
 |------|-------|-----------|
 | Scouts (pre-investigation) | default (no override) | Fast, cheap, code reading |
 | Planners | `anthropic/claude-opus-4-6` | Complex reasoning, architectural tradeoffs |
-| Unifier | `anthropic/claude-opus-4-6` with thinking | Synthesis requires holding multiple conflicting plans in context |
+| Unifier | `anthropic/claude-fable-5` | Synthesis requires holding multiple conflicting plans in context; strongest model for final reconciliation |
+| Simple mode | `anthropic/claude-fable-5` | Single-pass synthesis; same ceiling as unifier |
 
 **Why opus for planners:** Planning requires evaluating architectural tradeoffs, anticipating downstream effects, and writing acceptance criteria precise enough that a different agent can verify them. Sonnet produces thinner plans that miss edge cases. The cost of a wrong plan is re-doing implementation work — opus pays for itself.
 

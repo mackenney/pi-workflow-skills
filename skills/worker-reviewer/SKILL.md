@@ -1,6 +1,6 @@
 ---
 name: worker-reviewer
-description: Internal roles loaded by the orchestrator skill. Defines the adversarial Worker (implements a step, self-validates) and Reviewer (verifies without reimplementing, returns structured pass/fail) pair that forms the execute-verify loop with a max-iteration fuse.
+description: Internal roles loaded by the executor skill. Defines the adversarial Worker (implements a step, self-validates) and Reviewer (verifies without reimplementing, returns structured pass/fail) pair that forms the execute-verify loop with a max-iteration fuse.
 disable-model-invocation: true
 
 # Worker + Reviewer Skill
@@ -90,7 +90,7 @@ Acceptance criteria:
 ✅ `<command>` — output: "<relevant output>"
 ✅ All tests pass: <test count>
 
-Notes: <any relevant observations for the orchestrator — optional>
+Notes: <any relevant observations for the executor — optional>
 ```
 
 ### Failure
@@ -111,7 +111,7 @@ Blocker: <your assessment of what would need to change to fix this>
 Do NOT fix this without updated instructions — the approach may need to change.
 ```
 
-**Never guess or try a different approach without authorization.** If your approach fails, report it. The orchestrator or user decides whether to retry with a different approach.
+**Never guess or try a different approach without authorization.** If your approach fails, report it. The executor or user decides whether to retry with a different approach.
 
 ---
 
@@ -125,7 +125,7 @@ Criteria that must ALL be true to justify spawning:
 1. The sub-task is itself a parallelizable research or implementation problem (not just 3-10 tool calls)
 2. The sub-tasks have clearly independent, non-overlapping files/state
 3. Each sub-task has a clear interface (what it produces, what format)
-4. The depth would remain at 2 levels total (orchestrator → worker → sub-worker)
+4. The depth would remain at 2 levels total (executor → worker → sub-worker)
 
 **Not justified:**
 - Sub-task is a sequence of tool calls (just do it)
@@ -207,7 +207,7 @@ Acceptance criteria:
 ✅ No regressions: `git diff --name-only` shows only expected files
 ```
 
-All criteria must be explicitly confirmed. A PASS that says "everything looks good" is not acceptable — the orchestrator needs evidence.
+All criteria must be explicitly confirmed. A PASS that says "everything looks good" is not acceptable — the executor needs evidence.
 
 ### FAIL
 
@@ -231,7 +231,7 @@ Passing criteria (for context):
 
 Regression note: <if any, which test now fails that previously passed>
 
-Do NOT fix these issues. Return this report to the orchestrator for worker retry.
+Do NOT fix these issues. Return this report to the executor for worker retry.
 ```
 
 **Specificity is mandatory.** "The tests don't pass" is not actionable. "`pytest src/test_routing.py::test_external_project_save` failed with `AssertionError: Expected 'scheduled' got 'pending'` at `test_routing.py:47`" is actionable.
@@ -264,7 +264,7 @@ In round 2+, the worker receives the reviewer's feedback as additional context. 
 
 **Worker must not:**
 - Fix some failures and ignore others
-- Take a completely different implementation approach without notifying the orchestrator
+- Take a completely different implementation approach without notifying the executor
 - Argue with the reviewer in the report (fix the code, not the reviewer)
 
 ### Reviewer behavior in rounds 2+
@@ -286,14 +286,14 @@ Round 1 reviewer: <paste full feedback>
 Round 2 reviewer: <paste full feedback>
 Round 3 reviewer: <paste full feedback>
 
-Assessment: <orchestrator's diagnosis — is it a spec problem, approach problem, or environment problem?>
+Assessment: <executor's diagnosis — is it a spec problem, approach problem, or environment problem?>
 ```
 
 ---
 
 ## Context for Each Role
 
-### Worker context (provided by orchestrator)
+### Worker context (provided by executor)
 
 ```
 - Project path
@@ -305,7 +305,7 @@ Assessment: <orchestrator's diagnosis — is it a spec problem, approach problem
 - (In rounds 2+) Full reviewer feedback from prior rounds
 ```
 
-### Reviewer context (provided by orchestrator)
+### Reviewer context (provided by executor)
 
 ```
 - Project path
