@@ -83,6 +83,8 @@ Combining the two: a six-step sequence like `A -> B -> C \n D -> E -> F` is six 
 
 In 90% of cases, fix work goes to a subagent. Direct coordinator edits only if the fix meets the trivial threshold above.
 
+**Escalation rule:** if the confirmed items are unambiguous (clear location, clear fix), dispatch a fixer subagent. If any item requires a judgment call — ambiguous scope, conflicting requirements, architectural trade-off — stop and raise to the user before proceeding.
+
 ---
 
 ## Clean Round (Early Stop)

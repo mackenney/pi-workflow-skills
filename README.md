@@ -42,3 +42,31 @@ The skills are designed to chain:
 5. `/skill:fact-checker` — verify claims in the output against ground truth (optional)
 6. `/skill:e2e-tester` — exercise the implementation against a running stack (optional)
 7. `/skill:code-reviewer` — review the final diff before merging
+
+## Example — coordinator-driven pipeline
+
+Paste this into a pi session to run the full pipeline on a new feature or refactor:
+
+```
+/skill:coordinator
+
+Add async job queue support to the worker module.
+
+investigator -> fact-checker -> fix
+specifier -> planner -> fact-checker -> fix
+executor
+(code-reviewer -> fact-checker -> fix) x3 early stop 2 clean rounds
+e2e-tester
+```
+
+**How the coordinator reads this:**
+
+| Phase | What happens |
+|-------|-------------|
+| `investigator -> fact-checker -> fix` | Scout agents map the codebase; fact-checker verifies the findings report; a fixer subagent corrects any REFUTED or PARTIAL claims before planning begins. |
+| `specifier -> planner -> fact-checker -> fix` | Specifier writes the behavioral contract; planner produces `PROGRESS.md`; fact-checker audits the plan for inaccuracies; fixer patches anything confirmed wrong. |
+| `executor` | Dispatches worker-reviewer pairs in waves per the plan, tracking progress via git commits. |
+| `(code-reviewer -> fact-checker -> fix) x3` | Up to three review rounds: three parallel reviewers synthesize a diff critique; fact-checker audits the review claims against source; fixer addresses confirmed blockers. Stops early after 2 consecutive clean rounds. |
+| `e2e-tester` | Exercises the implementation against a running stack, narrow-to-wide, and reports any spec gaps or integration failures. |
+
+> The coordinator never implements. It reads executive summaries, decides next steps, and escalates blockers. All substantive work runs in subagents.
