@@ -78,15 +78,15 @@ Planners given unverified assumptions produce plans that break at step 1.
 
 ### Normal Mode (default)
 
-Dispatches 2–4 parallel planner agents at different angles, then a `anthropic/claude-fable-5` (frontier tier) unifier. Use for multi-step, multi-file, or high-risk plans. Activated by bare "plan" / "planner" invocations.
+Dispatches 2–4 parallel planner agents at different angles, then a frontier-tier unifier (see Model Guide for tier fallback rules). Use for multi-step, multi-file, or high-risk plans. Activated by bare "plan" / "planner" invocations.
 
 ### Simple Mode
 
-A single planning pass with `anthropic/claude-fable-5` (frontier tier). Use when the user says **"quick plan"** or **"simple plan"**. Skips multi-angle dispatch. Produces PROGRESS.md and step files in one pass.
+A single planning pass with a frontier-tier model (see Model Guide for tier fallback rules). Use when the user says **"quick plan"** or **"simple plan"**. Skips multi-angle dispatch. Produces PROGRESS.md and step files in one pass.
 
 Simple mode dispatch:
 ```
-subagent(agent: "worker", task: <simple-planner-task>, model: "anthropic/claude-fable-5")
+subagent(agent: "worker", task: <simple-planner-task>, model: <frontier-tier model per your harness config>)
 ```
 
 The simple planner receives the same inputs as normal-mode planners (problem statement, verified facts, spec constraints) but has no angle constraint — it synthesizes a complete plan in one pass. The validation step (Step 3) still applies.
@@ -102,9 +102,9 @@ Each planner attacks the problem from a different angle. They work independently
 **Dispatch:**
 ```
 subagent(tasks: [
-  { agent: "worker", task: <planner-task-angle-1>, model: "anthropic/claude-opus-4-8" },
-  { agent: "worker", task: <planner-task-angle-2>, model: "anthropic/claude-opus-4-8" },
-  { agent: "worker", task: <planner-task-angle-3>, model: "anthropic/claude-opus-4-8" },
+  { agent: "worker", task: <planner-task-angle-1>, model: <deep-tier model per your harness config> },
+  { agent: "worker", task: <planner-task-angle-2>, model: <deep-tier model per your harness config> },
+  { agent: "worker", task: <planner-task-angle-3>, model: <deep-tier model per your harness config> },
 ], worktree: false)
 ```
 
@@ -131,7 +131,7 @@ Tell each planner which angles the other planners are covering so they don't dup
 After planners complete, dispatch a single unifier with all plan files as inputs.
 
 ```
-subagent(agent: "worker", task: <unifier-task>, model: "anthropic/claude-fable-5")
+subagent(agent: "worker", task: <unifier-task>, model: <frontier-tier model per your harness config>)
 
 **Context mode:** Fork the unifier when the parent session holds significant context that the unifier needs to reconcile competing plans correctly (e.g., architectural constraints established during investigation). Use fresh when all required context is captured in the plan files themselves.
 ```
@@ -422,16 +422,18 @@ If this step needs to be reverted: `git revert <describe what commit to revert>`
 
 ## Model Guide
 
-| Role | Model | Rationale |
-|------|-------|-----------|
+Tiers (frontier/deep/standard/fast) are bound to concrete models by your harness's own configuration, not by this skill. Use whichever model your harness maps to the named tier. If a tier has no explicit mapping in your environment, pick a model matching that tier's intent rather than guessing.
+
+| Role | Tier | Rationale |
+|------|------|-----------|
 | Scouts (pre-investigation) | default (no override) | Fast, cheap, code reading |
-| Planners | `anthropic/claude-opus-4-8` (deep tier, medium thinking) | Complex reasoning, architectural tradeoffs |
-| Unifier | `anthropic/claude-fable-5` (frontier tier) | Synthesis requires holding multiple conflicting plans in context; strongest model for final reconciliation |
-| Simple mode | `anthropic/claude-fable-5` (frontier tier) | Single-pass synthesis; same ceiling as unifier |
+| Planners | deep, medium thinking | Complex reasoning, architectural tradeoffs |
+| Unifier | frontier | Synthesis requires holding multiple conflicting plans in context; needs the strongest reasoning available for final reconciliation |
+| Simple mode | frontier | Single-pass synthesis; same ceiling as unifier |
 
-**Why deep tier for planners:** Planning requires evaluating architectural tradeoffs, anticipating downstream effects, and writing acceptance criteria precise enough that a different agent can verify them. Sonnet produces thinner plans that miss edge cases. The cost of a wrong plan is re-doing implementation work — opus-4-8 pays for itself. Use medium thinking, not high/xhigh — per-task cost climbs fast at higher effort without a proportional quality gain for planning-style tasks.
+**Why deep tier for planners:** Planning requires evaluating architectural tradeoffs, anticipating downstream effects, and writing acceptance criteria precise enough that a different agent can verify them. A standard-tier model tends to produce thinner plans that miss edge cases. The cost of a wrong plan is re-doing implementation work — the stronger reasoning of deep tier pays for itself. Use medium thinking, not high/xhigh — per-task cost climbs fast at higher effort without a proportional quality gain for planning-style tasks.
 
-**Observed from sessions:** Explicitly specifying opus-4-8 with medium thinking for planning agents consistently produces step files with tighter acceptance criteria. Both parallel planners and the unifier benefit from the higher reasoning budget. Workers execute the resulting steps without clarification.
+**Observed from sessions:** Explicitly specifying deep tier with medium thinking for planning agents consistently produces step files with tighter acceptance criteria. Both parallel planners and the unifier benefit from the higher reasoning budget. Workers execute the resulting steps without clarification.
 ---
 
 ## Common Failures to Avoid

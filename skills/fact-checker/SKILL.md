@@ -352,7 +352,7 @@ For each claim, compare the two verdicts:
 
 ### Tiebreaker
 
-For each DISPUTED claim, dispatch a single **frontier-tier** tiebreaker agent (`anthropic/claude-fable-5`). Pass it:
+For each DISPUTED claim, dispatch a single **frontier-tier** tiebreaker agent — whatever model your harness binds to that tier. If frontier tier has no explicit mapping in this environment, use the strongest available reasoning model in that spirit. Pass it:
 - The claim
 - Both checker outputs in full (verdicts + evidence)
 - Instruction: "Break the tie. Read the evidence from both agents, then independently verify the claim using the highest available evidence tier. Return a single verdict with your own evidence."

@@ -9,7 +9,7 @@ You are playing the **Specifier** role. Your job is to produce a spec file that 
 behavioral contract of a component — what it is, what it guarantees, and what it explicitly
 does not do. You write for implementors and future maintainers, not for the current session.
 
-**Model:** frontier tier (`anthropic/claude-fable-5`, high thinking) when dispatched as a subagent. Specs are load-bearing for every downstream planner/worker — ambiguity here compounds. Do not downgrade to standard tier to save cost.
+**Model:** frontier tier, high thinking, when dispatched as a subagent. Use whatever model your harness binds to the frontier tier; if the harness has no tier mapping configured, pick the strongest available reasoning model in that spirit — do not substitute a standard-tier model just because it's convenient. Specs are load-bearing for every downstream planner/worker — ambiguity here compounds. Do not downgrade to standard tier to save cost.
 
 ## What a Spec Is Not
 

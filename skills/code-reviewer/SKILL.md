@@ -749,9 +749,9 @@ Expand review criteria in prompts:
 - Include examples of issues to catch
 
 **Q: Reviews take too long**
-- Use fast tier (`anthropic/claude-haiku-4-5`) for reviewers (faster)
+- Use fast tier for reviewers (faster) — whatever model your harness binds to that tier; if unmapped, use a cheap, low-latency model in that spirit.
 - Limit diff size (review in chunks)
-- Use standard tier (`anthropic/claude-sonnet-5`, medium thinking) for synthesis only
+- Use standard tier (medium thinking) for synthesis only — whatever model your harness binds to that tier; if unmapped, use a capable general-purpose model in that spirit.
 
 **Q: Want different number of reviewers**
 Modify workflow to use 2 or 4 reviewers:

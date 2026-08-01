@@ -208,7 +208,7 @@ FAIL — be specific:
 
 **Never ask the reviewer to "look at the code and see if it's good."** Reviewers must run commands and check specific locations. Judgment calls without evidence produce false passes.
 
-**Model for reviewers:** Use standard tier (`anthropic/claude-sonnet-5`, medium thinking). Do not raise above medium — per-task cost inverts past that point without a reliability gain. The reviewer must reason carefully about correctness, not just check syntax.
+**Model for reviewers:** Use standard tier, medium thinking — whatever model your harness binds to that tier. If standard tier has no explicit mapping in this environment, use a capable general-purpose model in that spirit rather than the cheapest available. Do not raise above medium thinking — per-task cost inverts past that point without a reliability gain, regardless of which model backs the tier. The reviewer must reason carefully about correctness, not just check syntax.
 
 ---
 
