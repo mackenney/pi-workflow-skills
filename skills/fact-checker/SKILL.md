@@ -352,7 +352,7 @@ For each claim, compare the two verdicts:
 
 ### Tiebreaker
 
-For each DISPUTED claim, dispatch a single **opus** tiebreaker agent (`anthropic/claude-opus-4-6`). Pass it:
+For each DISPUTED claim, dispatch a single **frontier-tier** tiebreaker agent (`anthropic/claude-fable-5`). Pass it:
 - The claim
 - Both checker outputs in full (verdicts + evidence)
 - Instruction: "Break the tie. Read the evidence from both agents, then independently verify the claim using the highest available evidence tier. Return a single verdict with your own evidence."

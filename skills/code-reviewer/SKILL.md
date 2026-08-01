@@ -749,9 +749,9 @@ Expand review criteria in prompts:
 - Include examples of issues to catch
 
 **Q: Reviews take too long**
-- Use `model: "haiku"` for reviewers (faster)
+- Use fast tier (`anthropic/claude-haiku-4-5`) for reviewers (faster)
 - Limit diff size (review in chunks)
-- Use sonnet for synthesis only
+- Use standard tier (`anthropic/claude-sonnet-5`, medium thinking) for synthesis only
 
 **Q: Want different number of reviewers**
 Modify workflow to use 2 or 4 reviewers:

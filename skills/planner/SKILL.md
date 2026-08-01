@@ -78,11 +78,11 @@ Planners given unverified assumptions produce plans that break at step 1.
 
 ### Normal Mode (default)
 
-Dispatches 2–4 parallel planner agents at different angles, then a `claude-fable-5` unifier. Use for multi-step, multi-file, or high-risk plans. Activated by bare "plan" / "planner" invocations.
+Dispatches 2–4 parallel planner agents at different angles, then a `anthropic/claude-fable-5` (frontier tier) unifier. Use for multi-step, multi-file, or high-risk plans. Activated by bare "plan" / "planner" invocations.
 
 ### Simple Mode
 
-A single planning pass with `claude-fable-5`. Use when the user says **"quick plan"** or **"simple plan"**. Skips multi-angle dispatch. Produces PROGRESS.md and step files in one pass.
+A single planning pass with `anthropic/claude-fable-5` (frontier tier). Use when the user says **"quick plan"** or **"simple plan"**. Skips multi-angle dispatch. Produces PROGRESS.md and step files in one pass.
 
 Simple mode dispatch:
 ```
@@ -95,16 +95,16 @@ The simple planner receives the same inputs as normal-mode planners (problem sta
 
 ## Step-by-Step Workflow (Normal Mode)
 
-### Step 1: Dispatch Parallel Opus Planners (2-4 agents)
+### Step 1: Dispatch Parallel Deep-Tier Planners (2-4 agents)
 
 Each planner attacks the problem from a different angle. They work independently and write to separate plan files.
 
 **Dispatch:**
 ```
 subagent(tasks: [
-  { agent: "worker", task: <planner-task-angle-1>, model: "anthropic/claude-opus-4-6" },
-  { agent: "worker", task: <planner-task-angle-2>, model: "anthropic/claude-opus-4-6" },
-  { agent: "worker", task: <planner-task-angle-3>, model: "anthropic/claude-opus-4-6" },
+  { agent: "worker", task: <planner-task-angle-1>, model: "anthropic/claude-opus-4-8" },
+  { agent: "worker", task: <planner-task-angle-2>, model: "anthropic/claude-opus-4-8" },
+  { agent: "worker", task: <planner-task-angle-3>, model: "anthropic/claude-opus-4-8" },
 ], worktree: false)
 ```
 
@@ -126,7 +126,7 @@ Assign 2-4 angles based on the complexity of the problem. Don't assign angles th
 **What each planner knows about the others:**
 Tell each planner which angles the other planners are covering so they don't duplicate. Example: "Another planner is covering database migration. Focus your plan on the API layer changes only."
 
-### Step 2: Dispatch Opus Unifier
+### Step 2: Dispatch Frontier-Tier Unifier
 
 After planners complete, dispatch a single unifier with all plan files as inputs.
 
@@ -425,13 +425,13 @@ If this step needs to be reverted: `git revert <describe what commit to revert>`
 | Role | Model | Rationale |
 |------|-------|-----------|
 | Scouts (pre-investigation) | default (no override) | Fast, cheap, code reading |
-| Planners | `anthropic/claude-opus-4-6` | Complex reasoning, architectural tradeoffs |
-| Unifier | `anthropic/claude-fable-5` | Synthesis requires holding multiple conflicting plans in context; strongest model for final reconciliation |
-| Simple mode | `anthropic/claude-fable-5` | Single-pass synthesis; same ceiling as unifier |
+| Planners | `anthropic/claude-opus-4-8` (deep tier, medium thinking) | Complex reasoning, architectural tradeoffs |
+| Unifier | `anthropic/claude-fable-5` (frontier tier) | Synthesis requires holding multiple conflicting plans in context; strongest model for final reconciliation |
+| Simple mode | `anthropic/claude-fable-5` (frontier tier) | Single-pass synthesis; same ceiling as unifier |
 
-**Why opus for planners:** Planning requires evaluating architectural tradeoffs, anticipating downstream effects, and writing acceptance criteria precise enough that a different agent can verify them. Sonnet produces thinner plans that miss edge cases. The cost of a wrong plan is re-doing implementation work — opus pays for itself.
+**Why deep tier for planners:** Planning requires evaluating architectural tradeoffs, anticipating downstream effects, and writing acceptance criteria precise enough that a different agent can verify them. Sonnet produces thinner plans that miss edge cases. The cost of a wrong plan is re-doing implementation work — opus-4-8 pays for itself. Use medium thinking, not high/xhigh — per-task cost climbs fast at higher effort without a proportional quality gain for planning-style tasks.
 
-**Observed from sessions:** Explicitly specifying opus with thinking for planning agents consistently produces step files with tighter acceptance criteria. Both parallel planners and the unifier benefit from the higher reasoning budget. Workers execute the resulting steps without clarification.
+**Observed from sessions:** Explicitly specifying opus-4-8 with medium thinking for planning agents consistently produces step files with tighter acceptance criteria. Both parallel planners and the unifier benefit from the higher reasoning budget. Workers execute the resulting steps without clarification.
 ---
 
 ## Common Failures to Avoid

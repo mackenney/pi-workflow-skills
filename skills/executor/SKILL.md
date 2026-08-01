@@ -208,7 +208,7 @@ FAIL — be specific:
 
 **Never ask the reviewer to "look at the code and see if it's good."** Reviewers must run commands and check specific locations. Judgment calls without evidence produce false passes.
 
-**Model for reviewers:** Use sonnet with high thinking when available. The reviewer must reason carefully about correctness, not just check syntax.
+**Model for reviewers:** Use standard tier (`anthropic/claude-sonnet-5`, medium thinking). Do not raise above medium — per-task cost inverts past that point without a reliability gain. The reviewer must reason carefully about correctness, not just check syntax.
 
 ---
 

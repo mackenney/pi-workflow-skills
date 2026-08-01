@@ -72,7 +72,7 @@ Use `agent: "worker"` (default worker agent) for scouts unless you have a specia
 
 **Model selection for scouts:**
 - Do NOT pass an explicit `model:` override. Let `settings.json` agentOverrides govern the worker model.
-- If you must override: use `anthropic/claude-sonnet-4-6` for standard scouts, `anthropic/claude-opus-4-6` for deep analysis.
+- If you must override: use `anthropic/claude-sonnet-5` (standard tier) for standard scouts, `anthropic/claude-opus-4-8` (deep tier, medium thinking) for deep analysis.
 
 ### Step 3: Optional — Competitive Scouts
 
