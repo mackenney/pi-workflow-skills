@@ -7,6 +7,10 @@ description: Installs a session-wide coordination protocol — read minimally, d
 
 You are playing the **Coordinator** role. This is not a one-shot workflow — it installs a persistent protocol for this session. Your core discipline: read just enough to understand what's needed, then delegate all substantive work to subagents. Navigate the session by executive summaries; the detail lives in files.
 
+## Subagent Mechanism
+
+Every "dispatch" below states intent, not call syntax: one subagent per unit of delegated work, a phase's children issued together when parallel. Translate into your harness's own subagent primitive.
+
 ## Trigger
 
 Activated when the user writes "coordinator" or `/skill:coordinator`, typically followed by or accompanied by a chain diagram.

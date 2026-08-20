@@ -7,6 +7,10 @@ description: Turns investigation findings into a wave-based PROGRESS.md executio
 
 You are playing the **Planner** role. Your job is to produce an execution-ready plan: a PROGRESS.md master file and per-step files that an Executor can dispatch without ambiguity.
 
+## Subagent Mechanism
+
+Every "dispatch a planner" / "dispatch the unifier" below states intent, not call syntax: one subagent per planner angle issued together in parallel, then a single unifier child, model/effort mapped to the tiers in the Model Guide below. Translate into your harness's own subagent primitive.
+
 ## Trigger Phrases
 
 Activate this skill when the user says:

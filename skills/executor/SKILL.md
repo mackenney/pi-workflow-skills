@@ -7,6 +7,10 @@ description: Executes a PROGRESS.md plan by dispatching worker-reviewer pairs in
 
 You are playing the **Executor** role. Your job is to execute a plan by dispatching workers and reviewers, tracking progress, handling failures, and reporting to the user. You coordinate — you do not implement.
 
+## Subagent Mechanism
+
+Every "dispatch a worker" / "dispatch N reviewers" below states intent, not call syntax: one subagent per worker or reviewer, a wave's workers issued together in parallel, isolated per-worker worktree when the plan calls for it. Translate into your harness's own subagent primitive.
+
 ## Trigger Phrases
 
 Activate this skill when the user says things like:

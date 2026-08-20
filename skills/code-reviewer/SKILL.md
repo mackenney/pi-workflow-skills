@@ -1,13 +1,13 @@
 ---
 name: code-reviewer
-description: Performs competitive multi-agent code review on uncommitted changes, branches, or GitHub PRs. Synthesizes findings from three independent reviewers into actionable inline feedback; optionally posts to GitHub or saves to a file. Use when changes are complete and ready for critique.
+description: Performs competitive multi-agent code review on uncommitted changes, branches, or GitHub PRs. Three independent reviewers find issues, cross-examine each other's findings (skip with `no-x-check`), then synthesis merges the results into actionable inline feedback; optionally posts to GitHub or saves to a file. Use when changes are complete and ready for critique.
 ---
 
 # Code Reviewer Skill
 
 ## Purpose
 
-Performs comprehensive, high-quality code reviews using a competitive multi-agent approach. Three independent reviewers analyze changes in parallel, competing to find the most meaningful issues, then a synthesis agent consolidates findings into actionable feedback with context.
+Performs comprehensive, high-quality code reviews using a competitive multi-agent approach. Three independent reviewers analyze changes in parallel, competing to find the most meaningful issues. By default they then cross-examine each other's findings — confirming, disputing with a reason, or flagging duplicates — before a synthesis agent merges the results into actionable feedback with context. Pass `no-x-check` to skip straight to synthesis.
 
 ## When to Use
 
@@ -40,6 +40,20 @@ Activate this skill when you hear:
 **Optional:**
 - Existing GitHub PR for PR-based reviews
 
+## Flags
+
+| Flag | Effect |
+|------|--------|
+| `no-x-check`, `skip cross-check`, `skip x-check`, `no cross-check` | Skip Step 3.5 cross-examination. Go straight from the three independent reviews to synthesis — the original N+1 flow instead of 2N+1. |
+
+Default: cross-examination runs. Skip it for small diffs, low-stakes changes, or when turnaround matters more than resolving inter-reviewer disagreement before synthesis has to guess.
+
+## Subagent Mechanism
+
+Dispatch instructions below state intent, not call syntax: how many children, what role, what context. Translate into your harness's own subagent primitive.
+
+Reviewers, cross-exam agents, and synthesis are each one batch — children run in parallel within a batch, and every child starts fresh, never forked or sharing session history. Competitive review depends on that independence.
+
 ## Multi-Agent Review Architecture
 
 **Competitive Review Process:**
@@ -48,17 +62,22 @@ Activate this skill when you hear:
    - Each reviewer analyzes changes independently
    - Competitive prompt: Best performer gets promoted, worst gets demoted
    - Must find MEANINGFUL issues (nitpicking lowers performance)
-   - Focus on: security, bugs, performance, maintainability, design
+   - Each carries the full criteria list; the assigned focus area is a bias, not an exclusive lane
 
-2. **Synthesis Agent** (final consolidation)
-   - Reads all three reviews
-   - Consolidates findings
-   - Removes duplicates and trivial issues
-   - Prioritizes by severity and impact
-   - Provides brief context for each issue
+2. **Cross-Examination** (parallel execution, default on — skip with `no-x-check`)
+   - Each reviewer receives every peer's complete findings and files a ledger: Confirmed, Disputed (with the argument that beats it), or Already Flagged (pointing to the matching finding)
+   - Confirmations state their basis — reread the code vs. plausible on skim — so synthesis can tell a specialist's corroboration from a bystander's nod
+   - One call per reviewer, not one per pair — cost stays 2N+1, not quadratic
+
+3. **Synthesis Agent** (final consolidation)
+   - Reads all three reviews, and all three ledgers when cross-exam ran
+   - Spine: findings confirmed or undisputed keep their original severity
+   - Graft: single-reviewer findings with no dispute against them are kept as-is
+   - Decide: disputed findings get an explicit resolution and the losing argument recorded, never silently dropped
+   - Distinguishes lane-matched convergence (specialist confirming specialist) from cross-lane convergence (bystander nodding)
    - Generates actionable recommendations
 
-3. **User Decision**
+4. **User Decision**
    - Review key findings
    - Judge what's worth addressing
    - Choose output format (GitHub comments or local file)
@@ -193,11 +212,11 @@ PR Status: Open, 1 review (changes requested), 3 CI checks failing
 
 ### Step 3: Deploy Three Competitive Reviewers
 
-**Spawn three parallel review agents using Task tool:**
+**Dispatch three parallel review agents (see Subagent Mechanism above).**
 
 **Context mode:** All three reviewers and the synthesis agent run fresh (the default — do not pass `context: "fork"`). Competitive review requires independent perspectives; forking would give all three reviewers the same parent session history, biasing them identically and defeating the competitive structure. The diff and purpose are passed explicitly in each task string.
 
-Use the `Task` tool with `subagent_type: "general-purpose"` to create three independent reviewers.
+Three independent reviewers, no shared role name required beyond "reviewer" — pass the competitive prompt template below as each one's task.
 
 **Competitive prompt template for each reviewer:**
 
@@ -271,19 +290,60 @@ Remember: Quality > Quantity. Find issues that truly matter.
 
 **Execute three reviews in parallel:**
 
-Send a SINGLE message with THREE Task tool calls:
+Send a single `subagent(tasks: [...])` call with all three review tasks:
 - Reviewer 1: Focus on security and correctness
 - Reviewer 2: Focus on performance and design
 - Reviewer 3: Focus on maintainability and testing
 
 **Wait for all three reviews to complete.**
 
-### Step 4: Synthesize Final Review
+### Step 3.5: Cross-Examine (skip if `no-x-check` requested)
 
-**Deploy synthesis agent using Task tool:**
+If the user's request includes `no-x-check`, `skip cross-check`, `skip x-check`, or an equivalent phrase, skip straight to Step 4 with the three raw reviews and no ledgers.
+
+Otherwise, dispatch three parallel cross-exam agents (see Subagent Mechanism above) — one per reviewer, each reading every other reviewer's complete findings in a single combined message. This is a broadcast round, not pairwise: one call per reviewer, not one call per pair, which keeps total cost at 2N+1 instead of growing quadratically as reviewer count increases.
+
+**Cross-exam prompt template for each reviewer:**
 
 ```
-You are the SYNTHESIS REVIEWER consolidating three independent code reviews.
+You are Reviewer [N], reviewing your peers' findings against the same diff you just reviewed.
+
+YOUR ORIGINAL FINDINGS:
+[Reviewer N's complete findings]
+
+PEER FINDINGS:
+[All other reviewers' complete findings, labeled by reviewer number]
+
+YOUR TASK:
+For every distinct point raised by a peer that you have not already addressed, file a verdict.
+Every peer point needs exactly one of these — an unmarked point is one you absorbed without saying so:
+
+- **Confirmed**: You checked it against the diff (reread the relevant lines / traced the call path) and it holds. State what you checked, not just "agreed."
+- **Disputed**: State the concrete argument that beats it — a guard clause it missed, existing behavior it mistook for a regression, an unreachable path. "I don't think that's an issue" with no reason is not a valid dispute.
+- **Already flagged**: Point to your own finding that covers the same spot, even if framed differently.
+
+If a peer point sits entirely outside your reviewed focus and you have no basis to check it beyond a skim, still file a verdict — mark it **Confirmed (skim only)** or **Disputed (skim only)** rather than staying silent, so synthesis can weight it as weaker evidence than a same-lane confirmation.
+
+Do not revise your own findings list here — this is a verdict pass, not a rewrite. If a peer's point genuinely changes your assessment of your own finding's severity, say so in the verdict rather than editing your original list.
+
+Reply with no preamble:
+
+## Cross-Exam: Reviewer [N]
+
+- <peer finding> — **Confirmed**: <what you checked>
+- <peer finding> — **Disputed**: <the argument>
+- <peer finding> — **Already flagged**: <your matching finding>
+- <peer finding> — **Confirmed (skim only)** / **Disputed (skim only)**: <basis>
+```
+
+**Wait for all three cross-exam replies before continuing.** If one cross-exam agent fails, proceed to synthesis with the other two ledgers and note in the internal notes that one reviewer's cross-exam is missing — do not retry more than once and do not block the run on it.
+
+### Step 4: Synthesize Final Review
+
+**Dispatch the synthesis agent (see Subagent Mechanism above).**
+
+```
+You are the SYNTHESIS REVIEWER consolidating three independent code reviews (and their cross-examination ledgers, when Step 3.5 ran).
 
 CONTEXT:
 [Full diff, purpose, PR description]
@@ -297,6 +357,9 @@ REVIEWER 2 FINDINGS:
 REVIEWER 3 FINDINGS:
 [Complete review 3]
 
+CROSS-EXAM LEDGERS (omit this whole block if `no-x-check` was requested):
+[All three cross-exam replies, labeled by reviewer number]
+
 YOUR TASK:
 Consolidate findings into terse, actionable format following CLAUDE.md style:
 - No fluff, maximum information density
@@ -306,7 +369,14 @@ Consolidate findings into terse, actionable format following CLAUDE.md style:
 - Complete grammatically correct sentences
 - CRITICAL: Never use "#N" notation (e.g., "#2", "Issue #3") in GitHub reviews - it auto-links to PR/issue. Use "Point 2", "Item 2", "the second issue" instead.
 
-EVALUATION (internal only, not shown to user):
+MERGE POLICY when ledgers are present:
+1. Spine: a finding with no Disputed verdict against it (Confirmed, Already Flagged, or simply unchallenged) keeps its original severity.
+2. Graft: a finding raised by only one reviewer, with no peer dispute against it, is kept as-is. A missing second opinion is not evidence against a finding — do not discard it for lacking corroboration.
+3. Decide: a finding with a Disputed verdict against it must be resolved, not silently dropped and not silently kept. State both positions and which one wins, with the winning argument. If the dispute cannot be settled from the diff alone, keep the finding at reduced confidence and say why it is contested rather than erasing it.
+4. Introduce no new findings at this stage. Every line in the output traces back to a reviewer's original list.
+5. Convergence: when multiple reviewers independently raised the same point, say so, and distinguish same-lane convergence (a specialist's finding independently corroborated by a peer who reread the code) from cross-lane convergence (a peer's ledger says "skim only"). Treat same-lane checked corroboration as real signal; do not present skim-only agreement the same way — it is closer to a bystander nodding than a second opinion.
+
+MERGE POLICY when `no-x-check` was requested (no ledgers exist):
 1. Rank reviewers by finding quality (for your judgment)
 2. Identify duplicates and trivial issues
 3. Keep all meaningful findings
@@ -359,7 +429,7 @@ Fix: [Concrete solution]
 
 [Direct next steps - what to fix, what's good about the PR]
 
-*Co-authored by Claude Code*
+*Co-authored by AI-assisted review*
 
 ---
 ## INTERNAL_NOTES (not posted to GitHub)
@@ -367,13 +437,16 @@ Fix: [Concrete solution]
 ### Rejected Findings
 [List false positives/overstated concerns with brief reasoning - for your synthesis judgment only, DO NOT include in GitHub review]
 
+### Resolved Disputes (cross-exam only, omit section if `no-x-check` was requested)
+[Every Disputed ledger verdict you ruled on: the finding, both positions, and which one won and why — keep this even when the winning side was "keep the original finding as-is," so a suspicious result is auditable without rereading three transcripts and three ledgers]
+
 ---
 
 STRUCTURE GUIDANCE:
 - Line-specific issues (1-10 lines affected) → INLINE_COMMENTS block
 - File-level issues (spans entire file) → Inline at line 1
 - General/architectural (multiple files) → GENERAL_REVIEW only
-- Rejected findings → INTERNAL_NOTES only, never surface to user
+- Rejected findings and resolved disputes → INTERNAL_NOTES only, never surface to user
 - Don't duplicate between inline and general
 - Reference inline comments in general review if needed ("See N inline comments")
 - CRITICAL: Never use "#N" notation (e.g., "#2") — it auto-links to GitHub issues. Use "Point 2", "Item 2", or "the second issue" instead.
@@ -439,7 +512,7 @@ View: [PR URL]
 cat > code-review-$(date +%Y%m%d-%H%M%S).md <<'EOF'
 # Code Review - [Branch/PR/Uncommitted]
 Date: [timestamp]
-Reviewer: Claude Code (Multi-Agent)
+Reviewer: AI-assisted (Multi-Agent)
 
 [Full consolidated review]
 
@@ -447,7 +520,7 @@ Reviewer: Claude Code (Multi-Agent)
 - [ ] src/auth/oauth.py (3 issues)
 - [ ] src/auth/tokens.py (2 issues)
 
-*Co-authored by Claude Code*
+*Co-authored by AI-assisted review*
 EOF
 ```
 
@@ -473,35 +546,35 @@ EOF
    - Cryptographic misuse
    - Input validation gaps
 
-2. **Correctness**
+3. **Correctness**
    - Logic errors and bugs
    - Edge cases not handled
    - Race conditions
    - Off-by-one errors
    - Null/undefined handling
 
-3. **Performance**
+4. **Performance**
    - N+1 query problems
    - Memory leaks
    - Inefficient algorithms
    - Unnecessary computations
    - Resource exhaustion risks
 
-4. **Maintainability**
+5. **Maintainability**
    - Code complexity (cyclomatic, cognitive)
    - Unclear naming or logic
    - Missing documentation for complex parts
    - Violation of DRY principle
    - Hard-coded values that should be configurable
 
-5. **Design**
+6. **Design**
    - Tight coupling
    - SOLID principle violations
    - Inappropriate abstractions
    - Missing error handling
    - Inconsistent patterns
 
-6. **Testing**
+7. **Testing**
    - Missing test coverage for critical paths
    - Edge cases not tested
    - Integration test gaps
@@ -542,6 +615,14 @@ Falling back to single-agent review...
 [Perform simplified review without competition]
 ```
 
+**Cross-exam agent fails:**
+```
+Error: One or more cross-examination agents failed.
+
+Proceeding to synthesis with the remaining ledgers, noted as a gap in INTERNAL_NOTES.
+[Do not retry more than once; do not block the run on a missing ledger]
+```
+
 **Cannot post to GitHub:**
 ```
 Error: Cannot post comments to GitHub.
@@ -578,8 +659,8 @@ Review was already reported inline. Save to local file instead?
 5. Frame as professional performance review
 
 **Synthesis Quality:**
-1. Remove duplicate findings across reviewers
-2. Upgrade severity if multiple reviewers flag same issue
+1. Resolve, don't silently drop — a Disputed finding gets a stated verdict, never a quiet disappearance
+2. Weight confirmations by basis — a same-lane reread outweighs a cross-lane skim; never report them identically
 3. Downgrade or remove purely subjective comments
 4. Add business/technical impact context
 5. Prioritize actionable over theoretical
@@ -673,7 +754,7 @@ Violates CLAUDE.md style guide. Not blocking this PR.
 
 Fix blocker before merge. Point 2 unlikely but should be addressed. PR fixes critical bug, test expansion is excellent.
 
-*Co-authored by Claude Code*
+*Co-authored by AI-assisted review*
 ```
 
 **GitHub Inline Comment (terse format):**
@@ -714,7 +795,7 @@ Ensures bug doesn't regress.
 # Code Review Report
 **Branch:** feature/add-oauth2
 **Date:** 2025-11-19 14:30:00
-**Reviewer:** Claude Code (Multi-Agent)
+**Reviewer:** AI-assisted (Multi-Agent)
 **Files Changed:** 12 (+487/-123)
 
 ## Code Review
@@ -728,7 +809,7 @@ Ensures bug doesn't regress.
 - [ ] src/auth/tokens.py (2 issues)
 - [ ] tests/test_auth.py (1 issue)
 
-*Co-authored by Claude Code*
+*Co-authored by AI-assisted review*
 ```
 
 ## Troubleshooting
@@ -752,11 +833,13 @@ Expand review criteria in prompts:
 - Use fast tier for reviewers (faster) — whatever model your harness binds to that tier; if unmapped, use a cheap, low-latency model in that spirit.
 - Limit diff size (review in chunks)
 - Use standard tier (medium thinking) for synthesis only — whatever model your harness binds to that tier; if unmapped, use a capable general-purpose model in that spirit.
+- Pass `no-x-check` to drop Step 3.5 entirely: N+1 calls instead of 2N+1, at the cost of losing inter-reviewer dispute resolution before synthesis.
 
 **Q: Want different number of reviewers**
-Modify workflow to use 2 or 4 reviewers:
-- 2: Faster, less comprehensive
-- 4: More thorough, slower
+Modify workflow to use 2 or 4 reviewers. Cost scales as N+1 without cross-exam, 2N+1 with it — linear either way, since cross-exam is one broadcast call per reviewer, not one call per pair:
+- 2: Faster, less comprehensive (3 calls without cross-exam, 5 with)
+- 3 (default): 4 calls without cross-exam, 7 with
+- 4: More thorough, slower (5 calls without cross-exam, 9 with)
 
 ---
 

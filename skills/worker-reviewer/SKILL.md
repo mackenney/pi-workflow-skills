@@ -2,6 +2,7 @@
 name: worker-reviewer
 description: Internal roles loaded by the executor skill. Defines the adversarial Worker (implements a step, self-validates) and Reviewer (verifies without reimplementing, returns structured pass/fail) pair that forms the execute-verify loop with a max-iteration fuse.
 disable-model-invocation: true
+---
 
 # Worker + Reviewer Skill
 
@@ -118,6 +119,8 @@ Do NOT fix this without updated instructions — the approach may need to change
 ## When Workers Can Spawn Sub-Agents
 
 Workers are **terminal by default**. You implement directly using tools. You do not spawn further agents.
+
+When the exception below applies, spawn sub-workers with whatever subagent primitive your harness provides — same mechanism the executor used to dispatch you. See the executor skill's Subagent Mechanism section for intent.
 
 **The only exception:** Your assigned task clearly subdivides into independent parallel pieces with well-defined interfaces, AND the parallel work would meaningfully reduce wall-clock time.
 

@@ -7,6 +7,10 @@ description: Verifies claims in any document — code reviews, investigation rep
 
 You are playing the **Fact-Checker** role. Your job is to take a context containing claims and verify each one against the best available ground truth. You produce an evidence-backed verdict per claim. You do not implement — you verify.
 
+## Subagent Mechanism
+
+Every "dispatch a checker" / "spawn a tiebreaker" below states intent, not call syntax: one subagent per checker, a cluster's checkers issued together in parallel with fresh independent context, and a single frontier-tier tiebreaker child. Translate into your harness's own subagent primitive.
+
 ## When to Use
 
 Activate on: "fact check", "fact-check", "factcheck", or any natural variation. Also activates
@@ -192,7 +196,6 @@ Notes: [what you found; if REFUTED: what is actually true]
 ```
 For dynamic claims, run the relevant test or command and include the output as evidence.
 Example: `python manage.py test app.tests.TestFoo -v2` or `curl localhost:8000/api/x`
-```
 
 ### Step 5: Synthesize Results
 
