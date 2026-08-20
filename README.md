@@ -1,6 +1,6 @@
 # pi-workflow-skills
 
-A [pi](https://github.com/badlogic/pi-coding-agent) package bundling nine agentic workflow skills that form a full development pipeline:
+A [pi](https://github.com/badlogic/pi-coding-agent) package bundling ten agentic workflow skills that form a full development pipeline:
 
 ```
 investigate → spec → plan → execute → fact-check / e2e-test → code-review
@@ -19,6 +19,7 @@ investigate → spec → plan → execute → fact-check / e2e-test → code-rev
 | `e2e-tester` | Exercises a spec-driven implementation end-to-end against a running stack, working narrow-to-wide until the integration surface is covered. Stops and reports on blockers rather than looping. |
 | `code-reviewer` | Competitive multi-agent code review. Three independent reviewers analyze changes in parallel, then a synthesis pass produces actionable feedback. |
 | `coordinator` | Installs a session-wide coordination protocol — read minimally, delegate maximally, navigate by executive summaries. Pair with a chain diagram when orchestrating complex multi-skill runs. |
+| `handoff` | Produces a controlled compaction — a handoff artifact plus a copy-paste message — before `/copy` + `/new`, a phase/agent boundary, or a worktree/subagent spin-off. |
 
 ## Install
 
