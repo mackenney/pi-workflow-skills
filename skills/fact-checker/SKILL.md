@@ -40,6 +40,8 @@ Always use the highest-trust source available for each claim. Do not reach for a
 
 **Rule:** Never use a lower tier when a higher tier is accessible. A claim about code behavior must be checked against the code, not a blog post.
 
+**Tier 7 tooling note — `source_check`:** if available, use the `source_check` tool for Tier 7 instead of manual `web_search` + `fetch_content`. Always pass `fetchContent: true` — without it the tool returns `missing-evidence` for everything regardless of source quality. It returns pre-ranked, quality-tagged sources (`official_docs` > `repo_issue`/`news` > `blog`/`forum` > `unknown`) with extracted passages, which is strictly better than manual search for citation quality. **Do not trust its own `status`/`confidence` field as the verdict** — in testing it defaults to `unclear` even against verbatim-matching official-docs passages, and rarely if ever returns `confirmed`. Treat its output as curated raw evidence only: read the returned passages/URLs yourself (use `get_search_content` with `findText` to pull exact passages) and write your own CONFIRMED/REFUTED/PARTIAL/UNVERIFIABLE verdict from that evidence, exactly as you would from a manual web search. Use `domainFilter` to pin to one official domain when you already know it.
+
 ---
 
 ## Step-by-Step Workflow
@@ -177,7 +179,7 @@ Evidence priority (use highest tier available):
 2. Executable experiments — run tests or commands to observe behavior
 3. Official docs — fetch from official sources
 4. Git history — git log/blame for intent and history
-5. Web search — last resort; prefer official and technical sources
+5. Web search — last resort; prefer official and technical sources (see Tier 7 note above).
 
 For each claim, return:
 - Verdict: CONFIRMED | REFUTED | PARTIAL | UNVERIFIABLE
