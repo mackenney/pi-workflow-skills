@@ -1,6 +1,6 @@
 // args: { target: "diff/PR description, e.g. 'git diff main...HEAD in /abs/repo' or 'PR #67'", reviewDir: "/abs/plans/x/review",
 //         baseRef?: "<sha before the change>" (pins the review range across fix rounds), repo?: "/abs/repo", angles?: string[] | number, diversityModel?: "openai/gpt-6-sol",
-//         crossExam?: boolean, maxRounds?: 2, stageDir?: "/abs/run/NN-review" (default: reviewDir) }
+//         crossExam?: boolean (default true), maxRounds?: 2, stageDir?: "/abs/run/NN-review" (default: reviewDir) }
 // Returns the stage envelope; full result in <stageDir>/result.json.
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Models are NOT named here except the opt-in diversityModel lane; modelScope rejects any value not
@@ -80,7 +80,7 @@ for (let round = 0; round < maxRounds; round += 1) {
   // execute-step.js), so the output path is passed again explicitly. It must differ from the angle's own
   // path: the runtime rejects two children of one workflow resolving output to the same file.
   const xexamPaths = [];
-  if (args.crossExam) {
+  if (args.crossExam ?? true) { // default on, as in the code-reviewer skill; "no x-check" passes false
     const xruns = await runs.all(
       angleRuns.map((r, i) => (r.ok ? {
         key: "r" + round + "-xexam-" + i,

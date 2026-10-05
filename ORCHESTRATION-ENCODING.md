@@ -719,16 +719,17 @@ This design is pi-subagents-specific by construction: typed gates, `acceptance.v
 
 | Stage (aliases) | Mechanism | Inputs (paths + allowed overrides) | Primary artifact |
 |---|---|---|---|
-| investigate (investigator) | single-agent stage, `wf-*`/builtin per tier, `investigator` skill | topic text; scope paths | findings report |
+| investigate (investigator) | parent dispatches 1–5 parallel `scout` children, then one `delegate` child with the `investigator` skill merges them | topic text; scope paths | findings report |
 | spec (specifier) | single-agent stage, `wf-synthesizer` spec mode, `specifier` skill | findings path | spec file |
 | fact-check-doc (fact-checker on a document) | single-agent stage, `wf-fact-checker` | document path | `factcheck.json` |
+| fix (after fact-check-doc) | single-agent stage, `worker` | document + fact-check paths | fixed document |
 | plan (planner → fact-checker → fix) | `plan-factcheck-fix.js` | spec path, plan dir; `angles`, `mode: simple`, `tier` | `plan.json` |
 | execute (executor) | `execute-step.js` / `execute-wave.js` per wave, then `terminal-gate.js` | plan dir; `tier`, `pr` | `PROGRESS.md` |
 | review (code-reviewer → fact-checker → fix, xN) | `review-factcheck-fix.js` | repo, base ref; `maxRounds`, `crossExam`, `diversityModel` | round syntheses |
-| e2e (e2e-tester) | single-agent stage, `e2e-tester` skill | spec/plan path, running stack | e2e report |
+| e2e (e2e-tester) | single-agent stage, `worker` + `e2e-tester` skill | spec/plan path, running stack | e2e report |
 | done-check | `terminal-gate.js` | plan dir; `pr` | gate JSON |
 
-A *single-agent stage* is one child launch with a task template from the table, `outputSchema` = the envelope, and `output` in the stage directory. Segments the table does not cover are dispatched as before, but still return the envelope.
+A *single-agent stage* is one child launch with a task from the table, `outputSchema` = the envelope and `output: <stageDir>/brief.json` (observed 2026-10-05: with both set, the runtime saves the structured result to the `output` path), and its details written to a named file in the stage directory. Segments the table does not cover are dispatched as before, but still return the envelope.
 
 **Envelope** (every stage, workflow or single agent):
 

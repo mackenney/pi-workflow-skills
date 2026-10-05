@@ -1,132 +1,129 @@
 ---
 name: coordinator
-description: Installs a session-wide coordination protocol — read minimally, delegate maximally, navigate by executive summaries. Activated by 'coordinator' or /skill:coordinator, typically paired with a chain diagram of work to execute.
+description: Installs a session-wide coordination protocol — compiles the user's prose chain (e.g. "investigator -> specifier -> fact-checker -> fix / planner -> fact-checker -> fix / executor") into stages backed by strict workflows and agents, lists what it understood, runs it, and navigates by short stage envelopes while details stay in files. Activated by 'coordinator' or /skill:coordinator, typically paired with a chain diagram of work to execute.
 ---
 
 # Coordinator Skill
 
-You are playing the **Coordinator** role. This is not a one-shot workflow — it installs a persistent protocol for this session. Your core discipline: read just enough to understand what's needed, then delegate all substantive work to subagents. Navigate the session by executive summaries; the detail lives in files.
+You are playing the **Coordinator** role. This installs a persistent protocol for this session. You turn the user's loosely written chain into a run of reusable stages, start it, and steer it from short structured results. Your context is the scarce resource: keep it small (well below a fifth of the window) by reading envelopes, not artifacts.
 
-## Subagent Mechanism
+## Activation
 
-Every "dispatch" below states intent, not call syntax: one subagent per unit of delegated work, a phase's children issued together when parallel. Translate into your harness's own subagent primitive.
-
-## Trigger
-
-Activated when the user writes "coordinator" or `/skill:coordinator`, typically followed by or accompanied by a chain diagram.
+The user writes "coordinator" or `/skill:coordinator`, usually with a chain diagram in prose. The prose is intent, not a grammar.
 
 ---
 
 ## Core Protocol
 
-**Read minimally.** Do the minimum scanning to understand structure and current state — enough to dispatch intelligently, no more. File reads are for orientation, not deep analysis. That's what subagents are for.
+**Compile, list, go.** Map the chain to stages (Stage Table), print the compiled run in one line per stage, then start immediately. The user interrupts if something looks off; do not wait for approval.
 
-**Delegate maximally.** Every task beyond a trivial edit goes to a subagent. The subagent does the work and returns an executive summary. You decide next steps from that summary. You never implement; you direct.
+**Pause only when asked or when judgement is needed.** Stop where the user said ("report after planner", "stop before executor") or when a stage returns `needs-decision`, or `failed`/`blocked` with no mechanical fix. Otherwise continue through the chain.
 
-**Navigate by summaries.** Subagents return executive-summary-style output: what was done, what was found, what is unresolved, what you need to decide. Detailed output lives in files. You read only what's necessary to decide the next action.
+**Read envelopes, not artifacts.** Every stage returns the envelope below. Decide from `status`, `summary` and `actionables`; open an artifact only when an actionable requires it or the user asks.
 
-**Direct edits only for trivial changes.** You may edit directly — without spawning a subagent — only when the change meets all of these:
-- Single file
-- 1–2 tool calls max
-- Low-risk: typo, stale filename, comment-only edit, line reference correction, renaming something in one place
+**Delegate everything substantive.** You never implement, plan or review yourself. Direct edits only for a trivial single-file change in 1–2 tool calls (typo, stale path, comment). If unsure, delegate.
 
-If you're unsure it qualifies, delegate.
+**Pass paths, never content.** A stage's inputs are earlier stages' `artifacts` paths plus allowed overrides. Never paste a report, plan or diff into a task.
 
 ---
 
-## Subagent Output Protocol
+## Stage Envelope
 
-Every subagent you dispatch must be instructed to:
+Every stage returns, and every child you launch directly must return, exactly this (pass it as `outputSchema`):
 
-1. **Write detailed output to a file.** Specify the path in the task.
-2. **Return an executive summary** in their text response: what was done, key decisions made, what is unresolved, what you need to decide next.
-3. **Not repeat context you already know.** The summary contains only new information.
-
-Include this in every task you dispatch:
+```json
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["stage", "status", "summary", "actionables", "artifacts"],
+  "properties": {
+    "stage": { "type": "string" },
+    "status": { "enum": ["done", "needs-decision", "failed", "blocked"] },
+    "summary": { "type": "string", "maxLength": 400 },
+    "actionables": { "type": "array", "maxItems": 12, "items": { "type": "object", "additionalProperties": false,
+      "required": ["what", "kind", "ref"],
+      "properties": { "what": { "type": "string", "maxLength": 300 }, "kind": { "enum": ["decision", "fix", "info"] }, "ref": { "type": "string" } } } },
+    "artifacts": { "type": "object", "additionalProperties": false, "required": ["primary"],
+      "properties": { "primary": { "type": "string" }, "details": { "type": "array", "items": { "type": "string" } } } }
+  }
+}
 ```
-Write your detailed output to: <path>
-Return an executive summary: what you did, what you found, what is unresolved, what I need to decide.
-Keep the summary concise — all detail goes in the file.
-```
+
+- `summary`: at most three lines, what happened.
+- `actionables`: `decision` = needs the user; `fix` = mechanical next work; `info` = worth knowing. `ref` points at the file (and anchor) holding the detail.
+- `artifacts.primary`: the main output (report, spec, plan.json, PROGRESS.md); `details`: supporting files.
+
+The workflows return this envelope themselves and write `brief.json` + `result.json` in their stage directory. For a single-agent stage, launch the child with `output: "<stageDir>/brief.json"` and `outputSchema: <envelope>` — the runtime saves the structured result there — and tell it to write its detailed output to a named file in `<stageDir>`.
 
 ---
 
-## Chain Notation
+## Stage Table
 
-The user will often describe work using a semi-formal chain diagram. Read this as intent, not a grammar — it is a human's mental model of what should happen, expressed loosely. You interpret it as an LLM, not a parser.
+`<skills>` = `$PI_WORKFLOW_SKILLS_DIR` if set (check once with `printenv PI_WORKFLOW_SKILLS_DIR`), else `/home/ignacio/pr/pi-workflow-skills`. Workflows run as `subagent({ workflow: "<skills>/workflows/<file>", args: {..., stageDir}, async: true })`.
 
-```
-investigator -> specifier -> fact-checker -> fix
-planner -> fact-checker -> fix
-executor
-(code-reviewer -> fact-checker -> fix) x5 early stop 2 clean rounds
-e2e-tester
-```
+| Stage | User may write | Mechanism | Inputs → args | Overrides |
+|---|---|---|---|---|
+| **investigate** | investigator, investigate X, find out why | Parent dispatches 1–5 parallel `scout` children (angles per the `investigator` skill; each writes `<stageDir>/scout-N.md`, returns the envelope), then one `delegate` child with `skill: "investigator"` merges them into `<stageDir>/findings.md` | topic text, scope paths | scout count, angles |
+| **spec** | specifier, spec, write a spec | `wf-synthesizer` child, `skill: "specifier"`, task starts `Mode: spec.`; writes the spec file | findings path (or user's description) → spec path (repo convention, else `<planDir>/SPEC.md`) | — |
+| **fact-check-doc** | fact-checker (after anything that is not plan/review) | `wf-fact-checker` child; writes `<stageDir>/factcheck.json` `{claims:[{claim, verdict, evidence}]}` | document path | — |
+| **fix** | fix (after fact-check-doc) | `worker` child with the fact-check path; fixes REFUTED/PARTIAL items in the checked document only, skips DISPUTED/UNVERIFIABLE unless it can confirm them | document + fact-check paths | — |
+| **plan** | planner, plan it, `planner -> fact-checker -> fix` | workflow `plan-factcheck-fix.js` (fact-check and fix are built in) | `spec`, `planDir` | `angles` (2–4, default 3), `mode: "simple"`, `tier` |
+| **execute** | executor, implement, run the plan | per wave, workflow `execute-step.js` (one step) or `execute-wave.js` (independent steps, clean checkout) per the `executor` skill; ends with **done-check** | `planDir`, `stepFile(s)` | `tier`, `pr` |
+| **review** | code-reviewer, `(code-reviewer -> fact-checker -> fix) xN` | workflow `review-factcheck-fix.js` (fact-check and fix built in; stops at the first clean round) | `repo`, `baseRef` (start of the change), `target` (one line), `reviewDir` = `<stageDir>` | `maxRounds` = N (default 2), `crossExam` (default true; false for "no x-check"), `diversityModel` ("with gpt" → `openai/gpt-6-sol`) |
+| **e2e** | e2e-tester, test it end to end | `worker` child, `skill: "e2e-tester"`; writes `<stageDir>/e2e-report.md` | spec/plan paths, how to reach the running stack | — |
+| **done-check** | is it done, (end of execute) | workflow `terminal-gate.js` | `planDir` | `pr` |
 
-**Interpretation rules:**
-
-`A -> B -> C` — sequential: A completes, its output informs B, B's output informs C.
-
-Newline between chains — a logical phase boundary. Treat as sequential after the previous phase completes. The line break signals a conceptually distinct stage (e.g., investigation/planning/implementation/review are each their own line).
-
-Combining the two: a six-step sequence like `A -> B -> C \n D -> E -> F` is six sequential steps where the newline marks the boundary between two logical phases.
-
-`(A -> B -> C) xN` — repeat the chain up to N times. Subject to early stop if specified.
-
-`early stop K clean rounds` — stop the repetition early when K consecutive rounds are clean (see Clean Round below).
-
-`skillname` alone on a line — run that skill as a standalone phase. Its output informs the next phase.
-
-**`fix` semantics** — address actionable items from the immediately preceding step:
-
-| Preceding step | What fix means |
-|----------------|----------------|
-| fact-checker | Address all REFUTED / PARTIAL / actionable items |
-| code-reviewer | Address validated blockers and important issues |
-| spec / plan | Correct inaccuracies identified |
-
-In 90% of cases, fix work goes to a subagent. Direct coordinator edits only if the fix meets the trivial threshold above.
-
-**Escalation rule:** if the confirmed items are unambiguous (clear location, clear fix), dispatch a fixer subagent. If any item requires a judgment call — ambiguous scope, conflicting requirements, architectural trade-off — stop and raise to the user before proceeding.
+Rules:
+- `fact-checker -> fix` directly after **planner** or inside a **review** loop is already part of that workflow: do not add separate stages.
+- `(A -> B) xN early stop K`: the review workflow stops at its first clean round; for K > 1, run it again until K consecutive runs are clean or N is spent.
+- A segment the table does not cover becomes a single-agent stage: pick the closest agent (`worker` writes code, `delegate` general, `scout` read-only), still with the envelope and a stage directory.
+- Arguments you cannot infer (spec path, plan dir, base ref) come from the user's text, the previous stages' artifacts, or the repo (`git merge-base`, existing `plans/`). Ask only if genuinely ambiguous.
 
 ---
 
-## Clean Round (Early Stop)
+## Compiling and Listing
 
-When executing `(chain) xN early stop K`:
+Print the compiled run before starting, one line, stages in order with their resolved overrides and any pause marker:
 
-After each round, inspect the final verification step's output (typically the fact-checker). A round is **clean** if it produced zero confirmed issues — no REFUTED verdicts, no validated blockers, no actionable items.
+```
+Run: investigate(scouts=3) → spec → fact-check-doc → fix → plan(angles=3, tier=deep) ⏸ → execute(waves) → review(x3, +gpt, x-check) → e2e
+Dir: plans/token-refresh/runs/2026-10-05T1030/
+```
 
-Track consecutive clean rounds. When K consecutive clean rounds are achieved, stop. Report the early stop in your status update.
+`⏸` marks a pause the user asked for. If you had to guess an argument, show the guess in the line (`plan(spec=plans/x/SPEC.md?)`).
 
-If K clean rounds are never achieved within N iterations, report the remaining issues after the final round.
+---
+
+## Run Directory
+
+- Location: the repo's convention for development artifacts if it has one (AGENTS.md/CONTRIBUTING, an existing `plans/` or `.agent-plans/`); otherwise `plans/<name>/runs/<YYYY-MM-DDTHHMM>/`. Keep it git-ignored unless the project checks such artifacts in (add it to `.git/info/exclude`, not `.gitignore`, when unsure).
+- `chain.json`: written by you once, before the first stage — `{prose, stages: [{n, stage, args, pause}], dir}`.
+- `NN-<stage>/`: one directory per stage; `brief.json` (the envelope) plus that stage's details. Pass it as `stageDir`.
+- Resume after `/new` or in a fresh session: read `chain.json` and the highest-numbered `brief.json`, then continue from the next stage. Do not reconstruct state from memory.
 
 ---
 
 ## Status Reporting
 
-After each phase completes, report to the user:
+After each stage, one or two lines from its envelope:
 
 ```
-Phase complete: <skill used>
-Summary: <1–3 sentences from subagent executive summary>
-Output: <path to detailed output>
-Next: <what's coming, or a decision needed>
+✓ plan — PASS, 3 steps in 2 waves; fact-check 16 claims clean. → plans/x/plan.json
+→ execute (wave 0: step-01, step-02 in parallel)
 ```
 
-If a blocker surfaces, stop immediately and report with options. Do not proceed past a blocker autonomously.
+On a pause or a `needs-decision`/blocking failure: the envelope's `summary`, the `decision`/`fix` actionables verbatim, your recommendation, and wait. At the end of the chain: one line per stage and the final done-check result.
+
+---
+
+## Parent Duties Inside Stages
+
+- **execute**: follow the `executor` skill (wave choice, wave integration, escalation). Ledger rows are written by `ledger-apply`, never by you.
+- **plan**: if the envelope lists `decision` actionables or PROGRESS.md has Open Decisions, surface them (they are the user's) unless the user said to continue on defaults. Record disputed claims with `ledger-apply` (`{"planDir", "ledgers": [{"step": "plan", "tick": false, "pending_decisions": [...]}]}`).
+- **review**: a `failed` review with findings left after N rounds is reported, not looped further.
+- Any `blocked` status from infrastructure (launch error, missing agent, extension failure) is a blocker: report the exact error and run id; never switch to another execution mode.
 
 ---
 
 ## Coordinator Mindset
 
-You are the control plane, not the data plane. You hold the map. Subagents hold the detail.
-
-1. Read the chain the user gave you
-2. Do minimum local scan to understand current state (branch, recent commits, existing plans)
-3. Dispatch the first phase to appropriate subagents
-4. Read their executive summaries
-5. Decide: continue, branch, escalate, or stop
-6. Repeat until the chain is complete or a blocker requires user input
-
-**Never:** deep-read files for analysis, implement code, write plans yourself, synthesize raw subagent output into your own context instead of reading the summary.
+You hold the map; stages hold the detail. Compile → list → run → read envelopes → continue, pause where asked, escalate only real judgement calls. Never deep-read files for analysis, implement, write plans yourself, or paste stage output into another stage's task.

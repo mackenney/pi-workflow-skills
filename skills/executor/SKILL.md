@@ -1,11 +1,11 @@
 ---
 name: executor
-description: Executes a PROGRESS.md plan step by step through the execute-step / execute-wave workflows, applies each returned ledger to PROGRESS.md, integrates wave branches, escalates blockers, and refuses to report completion until the terminal gate passes. Final execution step in the investigate→spec→plan→execute pipeline.
+description: Executes a PROGRESS.md plan wave by wave through the execute-step / execute-wave workflows (which write the ledger by script), integrates wave branches, escalates blockers, and refuses to report completion until the terminal gate passes. Final execution step in the investigate→spec→plan→execute pipeline.
 ---
 
 # Executor Skill
 
-You are playing the **Executor** role: the parent session that drives a plan to completion. You coordinate, apply ledgers, integrate, and talk to the human. You do not implement, and you do not improvise `subagent(...)` calls for workers or reviewers.
+You are playing the **Executor** role: the parent session that drives a plan to completion. You choose the dispatch, integrate waves, and talk to the human; ledger rows are written by the `ledger-apply` script, never by you. You do not implement, and you do not improvise `subagent(...)` calls for workers or reviewers.
 
 ## Subagent Mechanism
 
@@ -13,10 +13,10 @@ Dispatch, gating, typed verdicts and bounded fix rounds live in workflow files, 
 
 | Workflow | Use for | Returns |
 |---|---|---|
-| `workflows/execute-step.js` | one step (structural or atomic): gate sidecar → worker with runtime-executed `acceptance.verify` + STEP-VERDICT → `wf-step-reviewer` REVIEW-VERDICT → ≤2 fix rounds → optional CI (`args.pr`) | `{state, ledger, workerRunId, reviewRunId}` |
-| `workflows/execute-wave.js` | a wave of **independent atomic** steps: one isolated git worktree per step, parallel workers, then parallel typed reviews. No fix rounds. | `{state: PASS\|PARTIAL, board: [{step, state, commit, asyncDir, ledger}]}` |
+| `workflows/execute-step.js` | one step (structural or atomic): gate sidecar → worker with runtime-executed `acceptance.verify` + STEP-VERDICT → `wf-step-reviewer` REVIEW-VERDICT → ≤2 fix rounds → optional CI (`args.pr`, bound to the step commit) → `ledger-apply` | stage envelope (`status` done / needs-decision / failed / blocked); details in `<stageDir>/result.json` |
+| `workflows/execute-wave.js` | a wave of **independent atomic** steps: one isolated git worktree per step, parallel workers, then parallel typed reviews. No fix rounds, no ledger writes (lanes are unmerged). | stage envelope; lane board in `<stageDir>/result.json` |
 | `workflows/stack-ci-gate.js` | a PR stack after any rebase: CI per PR, downstream order, stop at first non-green | `{ok, firstNonGreen?, results}` |
-| `workflows/terminal-gate.js` | plan completion: fails closed on unchecked `## Steps` items, `open`/malformed ledger rows and non-green CI | `{ok, openSteps, openDeferred, openDisabled, errors, ci?}` |
+| `workflows/terminal-gate.js` | plan completion: fails closed on unchecked `## Steps` items, `open`/malformed ledger rows and non-green CI | stage envelope; `done` only when complete |
 
 Agent → model binding lives in agent `tier:` frontmatter and the generated `agentOverrides`; never name a model here. Gate classes, sidecar schema, verdict schemas and ledger row grammar are in `step-contract` — load it before touching a ledger.
 
@@ -69,16 +69,11 @@ Pass `args.tier` only to override the plan's executor tier. `fast` requires `wf-
 
 ---
 
-## Ledger Duty (non-delegable)
+## Ledger (written by script)
 
-After **every** workflow return and **before** dispatching the next step, apply the returned `ledger` object to PROGRESS.md yourself, using the `step-contract` row grammar:
+`execute-step.js` applies each passed step's typed verdict to PROGRESS.md through `scripts/ledger-apply.sh` (`step-contract` grammar): deferred and proxy gates → `open` rows, decisions → "Decisions taken", pending decisions → "Pending decisions (human)", step ticked `[x]` with its commit (only when the step, CI included, is PASS). Re-applying is a no-op. You do not edit ledger rows.
 
-- each `deferred[]` entry → an `open` row in "Tech debt / deferred gates"
-- each `proxies_used[]` entry → note it with the gate row; a proxy without a deferred real-gate row is a ledger gap — add the row
-- `decisions_taken[]` → "Decisions taken"; `pending_decisions[]` → "Pending decisions (human)"
-- mark the step `[x]` with its commit
-
-Never delegate ledger writes to a child. Never write `discharged` without the commit where the real gate ran. Never write `waived by …` unless the human wrote it or explicitly told you to, quoting them. No one — you included — judges a deferred gate "insignificant".
+You may still, only at the human's explicit instruction and quoting them, write a `waived by <name> <YYYY-MM-DD>: <reason>` status, or `discharged <commit>` with the commit where the real gate ran. No one — you included — judges a deferred gate "insignificant".
 
 ---
 
@@ -89,7 +84,7 @@ Committed lanes are retained on branches `pi-subagents/<key>-…`; the exact bra
 1. Merge (or cherry-pick) the lane branch onto the working branch.
 2. Mechanical conflict (imports, ordering) → resolve or dispatch a worker with both commits. Real logic conflict → do not auto-merge; revert, serialize those steps via `execute-step.js`, record the dependency the plan missed under "Decisions taken", tell the human.
 3. After all merges, re-run every merged step's sidecar gates on the integrated tree. Lanes passed in isolation; only the integrated run proves the wave.
-4. Apply ledgers, then remove each lane's worktree before its branch (a branch checked out in a worktree cannot be deleted): `git worktree remove --force <path>` (paths from `git worktree list`), then `git branch -D <lane branch>`.
+4. Apply the lane ledgers: `echo '{"planDir":"<planDir>","fromResult":"<stageDir>/result.json"}' | <skills>/scripts/ledger-apply.sh` (add `"steps":[...]` to apply only the lanes you merged). Then remove each lane's worktree before its branch (a branch checked out in a worktree cannot be deleted): `git worktree remove --force <path>` (paths from `git worktree list`), then `git branch -D <lane branch>`.
 
 `FAIL` lanes: re-run individually through `execute-step.js` (it has fix rounds).
 
@@ -97,9 +92,11 @@ Committed lanes are retained on branches `pi-subagents/<key>-…`; the exact bra
 
 ## Failure Handling
 
-- `state: BLOCKED` (sidecar unreadable, unknown tier) → fix the plan artifact, re-run.
-- `state: FAIL, stage: implement` → the runtime or the worker's own verdict failed a gate. Read `acceptance`/`verdict` before retrying; environmental issue → fix and re-run; wrong gate/step → amend step file + sidecar, record the change, re-run.
-- `state: FAIL, stage: review|fix` → fix rounds are exhausted. **Stop and escalate** with the step file, the final REVIEW-VERDICT verbatim, and your diagnosis.
+Read the envelope's `fix` actionable first; open `<stageDir>/result.json` only for the detail it points at.
+
+- `blocked` (sidecar unusable, no lane for the tier, ledger-apply failed, CI pending/none/stale) → fix the artifact or wait for CI (push the step commit if CI is `stale`), then re-run.
+- `failed` at implement → the runtime or the worker's own verdict failed a gate. Environmental issue → fix and re-run; wrong gate/step → amend step file + sidecar (re-run `validate-plan.sh`), re-run.
+- `failed` at review/fix → fix rounds are exhausted. **Stop and escalate** with the step file, the final REVIEW-VERDICT (from `result.json`), and your diagnosis.
 - Workflow/launch/extension failure → infrastructure blocker. Report the exact error, run id and repo state; do not switch execution mode.
 
 Escalate immediately when: a wave has 3+ failing steps with no common fix; a change breaks tests the step never mentioned; the codebase diverges from plan assumptions; an irreversible action (migration, external API) looks wrong.
@@ -110,7 +107,7 @@ Escalate immediately when: a wave has 3+ failing steps with no common fix; a cha
 
 ## Terminal Gate
 
-The plan is complete **only** when `terminal-gate.js` returns `ok: true` (pass `args.pr` when a PR exists). If it returns `ok: false`, report the listed open steps / rows / CI state verbatim (an open step means execute it, not ask the human) and ask the human to discharge or waive each one. Do not report completion, do not soften the wording, do not write waivers yourself.
+The plan is complete **only** when `terminal-gate.js` returns `status: "done"` (pass `args.pr` when a PR exists). Otherwise act on its actionables: `fix` (unfinished step, malformed ledger, red CI) is your work; `decision` (an open ledger row) goes to the human to discharge or waive. Do not report completion, do not soften the wording, do not write waivers yourself.
 
 ---
 
@@ -130,8 +127,8 @@ Assessment: <diagnosis>
 Options: 1. … 2. …
 ```
 
-Completion report: all commits, the terminal-gate JSON, and any pending human decisions.
+Completion report: all commits, the terminal-gate envelope, and any pending human decisions.
 
 ## Context Discipline
 
-Keep in your context: the wave map, current step, returned ledgers, failure history. Drop finished waves — git and PROGRESS.md hold them. Children get only what the workflow passes them; never paste PROGRESS.md or other steps into a task.
+Keep in your context: the wave map, current step, the latest envelopes, failure history. Drop finished waves — git and PROGRESS.md hold them. Children get only what the workflow passes them; never paste PROGRESS.md or other steps into a task.

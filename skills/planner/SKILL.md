@@ -9,7 +9,7 @@ You are playing the **Planner** role. Your job is to produce an execution-ready 
 
 ## Subagent Mechanism
 
-Do not improvise `subagent(...)` calls for planning. Run `workflows/plan-factcheck-fix.js` via `subagent({ workflow: "<absolute script path>", args, async: true })`: it dispatches `wf-planner` (deep tier) per angle, then `wf-synthesizer` (frontier tier, plan mode) to unify them under a typed `validate-plan.sh` gate, then `wf-fact-checker` on the result, with a bounded fix loop. `args.mode: "simple"` (or omitting `args.angles`) skips the multi-angle dispatch and runs a single `wf-synthesizer` pass. You (the parent) read the workflow's returned `planPath`/`factcheckClass`/`pendingDecisions`, write any `pendingDecisions` into PROGRESS.md's "Pending decisions (human)" section, and report to the user — the workflow file owns dispatch, gating and retries; this skill owns the templates, sizing rules and human-facing protocol.
+Do not improvise `subagent(...)` calls for planning. Run `workflows/plan-factcheck-fix.js` via `subagent({ workflow: "<absolute script path>", args, async: true })`: it dispatches `wf-planner` (deep tier) per angle, then `wf-synthesizer` (frontier tier, plan mode) to unify them under a typed `validate-plan.sh` gate, then `wf-fact-checker` on the result, with a bounded fix loop. `args.mode: "simple"` (or omitting `args.angles`) skips the multi-angle dispatch and runs a single `wf-synthesizer` pass. It returns the stage envelope (`skills/coordinator/SKILL.md`); you read its `summary`/`actionables`, record `decision` actionables under "Pending decisions (human)" with `scripts/ledger-apply.sh` (`{"planDir", "ledgers": [{"step": "plan", "tick": false, "pending_decisions": [...]}]}`), and report to the user — the workflow file owns dispatch, gating and retries; this skill owns the templates, sizing rules and human-facing protocol.
 
 See `step-contract` for the gate taxonomy, coverage matrix, and PROGRESS.md ledger row grammar every step file and sidecar must follow.
 
@@ -129,7 +129,7 @@ The synthesizer produces the final PROGRESS.md, all step files, their `*.gates.j
 
 ### Step 3: Validate Output (mandatory)
 
-`workflows/plan-factcheck-fix.js` already ran `scripts/validate-plan.sh` as a typed gate before returning (schema errors, missing gate classes, empty coverage matrices, First-Artifact Rule violations all fail it mechanically) and ran `wf-fact-checker` on the result. Do not re-derive that check by hand. After the workflow returns, run these human-facing checks before reporting to the user:
+`workflows/plan-factcheck-fix.js` already ran `scripts/validate-plan.sh` as a typed gate before returning (schema errors, missing gate classes, no runnable gate, dangling coverage rows, sidecar/plan.json/step-file drift, PROGRESS.md sections and checklist, deferred gates without open rows, First-Artifact Rule violations all fail it mechanically; coverage adequacy is the fact-checker's call) and ran `wf-fact-checker` on the result. Do not re-derive that check by hand. After the workflow returns, run these human-facing checks before reporting to the user:
 
 **3a. Verify the plan directory layout**
 
@@ -282,7 +282,7 @@ In Progress | Blocked | Complete
 <Any unresolved choices requiring user input — if none, omit>
 
 ## Decisions taken
-<One line per decision, with commit or step reference — appended by the parent from each step's returned ledger object>
+<One line per decision, with commit or step reference — appended by scripts/ledger-apply.sh from each step's typed verdict>
 
 ## Pending decisions (human)
 <Unresolved after a second fresh fact-check/review round, or a worker escalation — if none, omit>

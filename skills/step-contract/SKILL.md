@@ -194,7 +194,7 @@ The plan directory's ledger file (`PROGRESS.md` by default) is authoritative —
 | CI job X | .github/workflows/x.yml | flaky on shared runner | open |
 ```
 
-The `## Steps` section is a `- [ ]`/`- [x]` checklist, one item per step; the parent ticks a step after applying its ledger. The terminal gate fails while any item is unchecked, or when the section is missing or empty.
+The `## Steps` section is a `- [ ]`/`- [x]` checklist, one item per step; `ledger-apply` ticks it (with the commit) when the step passes. The terminal gate fails while any item is unchecked, or when the section is missing or empty.
 
 Inside the two debt sections every non-blank line must be part of the table (an HTML comment is allowed); prose or list items there fail the terminal gate, because they could hide an open item. Inside `## Steps` every list item must be a checkbox. Every data row is a real item. An empty table (header + separator only) means nothing recorded; never write placeholder rows such as `| (none) | | |` — they have no valid Status and fail the terminal gate.
 
@@ -205,6 +205,7 @@ Inside the two debt sections every non-blank line must be part of the table (an 
   instructed the parent to write it verbatim, quoting them. No model classifies significance and
   no model waives its own or another agent's deferred gate.
 
-The parent session writes every row from each workflow script's returned `ledger` object before
-dispatching the next step; it does not delegate ledger writes to a child. Mission `state.ledger.<step>`
+Rows are written by `scripts/ledger-apply.sh` from each step's typed verdict (called by
+`execute-step.js`, and by the parent for merged wave lanes); no model edits ledger rows, apart from
+human-dictated waivers/discharges. Mission `state.ledger.<step>`
 is an optional, best-effort mirror — never read as authority by `terminal-gate.sh` or anything else.
