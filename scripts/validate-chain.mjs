@@ -22,6 +22,10 @@ const STAGE_WORKFLOW = {
   investigate: ["stage.js"], spec: ["stage.js"], "fact-check-doc": ["stage.js"], fix: ["stage.js"], e2e: ["stage.js"], custom: ["stage.js"],
   plan: ["plan-factcheck-fix.js"], execute: ["execute-step.js", "execute-wave.js"], review: ["review-factcheck-fix.js"], "done-check": ["terminal-gate.js"]
 };
+// Args a stage cannot run without; a compiled stage missing one would fail (or guess) at launch.
+const STAGEJS = ["stage", "agent"];
+const REQUIRED = { review: ["target", "reviewDir"], plan: ["spec", "planDir"], execute: ["planDir"], "done-check": ["planDir"],
+  investigate: STAGEJS, spec: STAGEJS, "fact-check-doc": STAGEJS, fix: STAGEJS, e2e: STAGEJS, custom: STAGEJS };
 const allowedFor = {};
 for (const [stage, files] of Object.entries(STAGE_WORKFLOW)) {
   const set = new Set();
@@ -71,7 +75,7 @@ const stages = Array.isArray(chain.stages) ? chain.stages : (errors.push("stages
 stages.forEach((s, i) => {
   if (!allowedFor[s?.stage]) { errors.push("stages[" + i + "]: unknown stage " + JSON.stringify(s?.stage) + " (known: " + Object.keys(allowedFor).join(", ") + ")"); return; }
   for (const k of Object.keys(s.args ?? {})) if (!allowedFor[s.stage].has(k)) errors.push("stages[" + i + "] " + s.stage + ": arg " + k + " is not accepted (allowed: " + [...allowedFor[s.stage]].join(", ") + ")");
-  if (s.stage === "custom" && !s.args?.agent) errors.push("stages[" + i + "] custom: args.agent is required");
+  for (const k of REQUIRED[s.stage] ?? []) if (s.args?.[k] === undefined || s.args[k] === "") errors.push("stages[" + i + "] " + s.stage + ": required arg " + k + " missing");
 });
 // A structured `to` must land in the compiled stages, or the reading was recorded but never applied.
 mapping.forEach((m, i) => {

@@ -215,7 +215,7 @@ if [ "$(stat -c %a "$T/settings.json")" = 600 ] && [ -f "$T/tier-overrides.state
 # validate-chain: every meaningful prose word is mapped; args must be ones the workflow accepts
 vc() { printf '%s' "$1" > "$T/chain.json"; "$S/validate-chain.sh" "$T/chain.json"; }
 VC_OK='{"prose":"code-reviewer frontier -> fix only trivial stuff, x1","status":"ready","questions":[],
- "stages":[{"n":1,"stage":"review","args":{"reviewerModel":"anthropic/claude-fable-5-1:high","fixScope":"trivial","maxRounds":1}}],
+ "stages":[{"n":1,"stage":"review","args":{"target":"branch feat","reviewDir":"/r","reviewerModel":"anthropic/claude-fable-5-1:high","fixScope":"trivial","maxRounds":1}}],
  "mapping":[{"from":"code-reviewer","to":"stage:review","confidence":"exact"},{"from":"frontier","to":"review.reviewerModel=anthropic/claude-fable-5-1:high","confidence":"exact"},
   {"from":"fix only trivial stuff","to":"review.fixScope=trivial","confidence":"inferred"},{"from":"x1","to":"review.maxRounds=1","confidence":"exact"}]}'
 check "vc: fully mapped chain ok" '.ok == true and .status == "ready" and (.inferred | length) == 1' "$(vc "$VC_OK")"
@@ -226,6 +226,7 @@ check "vc: invented from rejected" '.ok == false and (.errors[0] | test("verbati
 check "vc: ambiguous needs questions" '.ok == false and (.errors[0] | test("without questions"))' "$(vc "$(jq -c '.mapping[1].confidence = "ambiguous"' <<< "$VC_OK")")"
 check "vc: questions force ask" '.ok == true and .status == "ask"' "$(vc "$(jq -c '.mapping[1].confidence = "ambiguous" | .status = "ask" | .questions = [{"about":"frontier","options":["reviewer model","plan tier"]}]' <<< "$VC_OK")")"
 check "vc: ignored needs a reason" '.ok == false and (.errors[0] | test("reason"))' "$(vc "$(jq -c '.mapping[1] = {"from":"frontier","confidence":"ignored"}' <<< "$VC_OK")")"
+check "vc: required arg missing" '.ok == false and (.errors[0] | test("required arg target"))' "$(vc "$(jq -c 'del(.stages[0].args.target)' <<< "$VC_OK")")"
 check "vc: unknown stage" '.ok == false and (.errors[0] | test("unknown stage"))' "$(vc "$(jq -c '.stages[0].stage = "revue"' <<< "$VC_OK")")"
 
 # every workflow declares ALLOWED_ARGS and returns a blocked envelope for unknown args (no silent drops)

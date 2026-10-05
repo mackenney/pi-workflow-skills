@@ -1,7 +1,8 @@
 // Returns the stage envelope; full result in <stageDir>/result.json (stageDir defaults under <planDir>/runs/).
 // args: { spec: "/abs/spec.md", planDir: "/abs/plans/x", stageDir?: "/abs/run/NN-plan", tier?: "deep"|"standard"|"fast" (planning effort; step tiers are validated separately),
 //         mode?: "structural"|"simple", angles?: number|[] (default 3 unless mode "simple"), maxSynthRounds?: 3,
-//         plannerModel?/synthModel?/factcheckModel?/fixModel?: "<provider/id[:thinking]>", notes?: "<user intent, appended to every child task>" }
+//         plannerModel?/synthModel?/factcheckModel?/fixModel?: "<provider/id[:thinking]>", notes?: "<user intent, appended to every child task>",
+//         fixScope?: "clear"|"trivial"|"all"|"none" (default "clear"; same meaning as in review-factcheck-fix.js) }
 // Unknown args return a blocked envelope: a misspelled or invented arg must not be dropped silently.
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Gate commands run through the host shell, so the env override expands there (isolated test installs set it).
@@ -9,16 +10,25 @@
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 const SKILLS = "${PI_WORKFLOW_SKILLS_DIR:-/home/ignacio/pr/pi-workflow-skills}";
-const ALLOWED_ARGS = ["spec", "planDir", "stageDir", "tier", "mode", "angles", "maxSynthRounds", "plannerModel", "synthModel", "factcheckModel", "fixModel", "notes"];
+const ALLOWED_ARGS = ["spec", "planDir", "stageDir", "tier", "mode", "angles", "maxSynthRounds", "plannerModel", "synthModel", "factcheckModel", "fixModel", "fixScope", "notes"];
+const FIX_SCOPES = ["clear", "trivial", "all", "none"];
 const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
-if (badArgs.length || !args.planDir || !args.spec) {
-  const why = badArgs.length ? "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")" : "spec and planDir are required";
+const badScope = args.fixScope !== undefined && !FIX_SCOPES.includes(args.fixScope);
+if (badArgs.length || badScope || !args.planDir || !args.spec) {
+  const why = badArgs.length ? "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")" : badScope ? "fixScope must be one of " + FIX_SCOPES.join("|") : "spec and planDir are required";
   const env = { stage: "plan", status: "blocked", summary: why.slice(0, 400), actionables: [{ what: why.slice(0, 300), kind: "fix", ref: "workflows/plan-factcheck-fix.js" }], artifacts: { primary: "workflows/plan-factcheck-fix.js" } };
   if (args.stageDir) await safe(runs.run("persist-args", { agent: "wf-host-command", label: "Persist plan arg error",
     task: JSON.stringify({ script: "write-artifact", path: args.stageDir + "/brief.json", json: env }) }));
   return env;
 }
 const notesLine = args.notes ? "User notes for this stage: " + args.notes : "";
+const fixScope = args.fixScope ?? "clear";
+// Escalated plan defects go to PROGRESS.md Open Decisions (the user's, per the planner skill), never silently dropped.
+const PLAN_SCOPE_TEXT = {
+  all: "Fix every REFUTED/PARTIAL claim.",
+  clear: "Fix a REFUTED/PARTIAL claim only if its fix is unambiguous (one obviously right correction, no design choice). Record every other one as an Open Decision in PROGRESS.md (claim, why it needs the user) instead of fixing it.",
+  trivial: "Fix only trivial REFUTED/PARTIAL claims: typos, stale paths/names/commands, doc drift, one-line mechanical corrections. Record every other one as an Open Decision in PROGRESS.md (claim, why it needs the user) instead of fixing it."
+};
 const pick = (m) => (m ? { model: m } : {});
 // The coordinator's table documents 3 angles as the default; only mode "simple" (or angles: 0) skips them.
 const angleCount = args.mode === "simple" ? 0 : (args.angles ?? 3);
@@ -124,11 +134,11 @@ const fcUnusable = (run, cls) => !run.ok || !cls || cls.error || !(cls.total > 0
 if (fcUnusable(fc, fcClass)) { result = { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error }; break main; }
 
 // 4. If refuted+partial > 0: one builtin-worker fix pass, then a second fact-check round.
-if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
+if (fixScope !== "none" && fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
   // The fix pass rewrites plan.json, step files and sidecars, so it runs under the same validate-plan gate as synthesis.
   const fix = await safe(runs.run("plan-fix-0", {
     agent: "worker", skill: "step-contract", label: "Fix plan per fact-check", ...pick(args.fixModel),
-    task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars/PROGRESS.md) per the REFUTED/PARTIAL claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + "). Keep plan.json and every sidecar identical where they overlap.",
+    task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars/PROGRESS.md) per the REFUTED/PARTIAL claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + "). " + PLAN_SCOPE_TEXT[fixScope] + " Keep plan.json and every sidecar identical where they overlap." + (notesLine ? "\n" + notesLine : ""),
     gate: {
       command: SKILLS + "/scripts/validate-plan.sh '" + planOutputPath + "'",
       output: "json", schema: VALIDATE_SCHEMA, timeoutMs: 120000
@@ -152,9 +162,12 @@ if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
 
 // DISPUTED claims are not defects the worker can fix; they go to the human (step-contract "Pending decisions").
 const pendingDecisions = (fcClass && fcClass.disputed > 0) ? [fcClass.disputed + " disputed fact-check claim(s) - see " + factcheckPath] : [];
+const clean = fcClass && fcClass.refuted === 0 && fcClass.partial === 0;
+// Outside fixScope "all", remaining defects are ones the scope told the worker to leave: the user's call, not a failure.
+if (!clean && fixScope !== "all") pendingDecisions.push((fcClass.refuted + fcClass.partial) + " refuted/partial claim(s) left by fixScope " + fixScope + " - see " + factcheckPath + " and PROGRESS.md Open Decisions");
 
 result = {
-  state: fcClass && fcClass.refuted === 0 && fcClass.partial === 0 ? "PASS" : "FAIL",
+  state: clean || fixScope !== "all" ? "PASS" : "FAIL",
   planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, pendingDecisions, angles: angleOutputs
 };
 }
