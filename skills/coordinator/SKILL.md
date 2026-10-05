@@ -95,9 +95,10 @@ Dir: plans/token-refresh/runs/2026-10-05T1030/
 
 ## Run Directory
 
-- Location: the repo's convention for development artifacts if it has one (AGENTS.md/CONTRIBUTING, an existing `plans/` or `.agent-plans/`); otherwise `plans/<name>/runs/<YYYY-MM-DDTHHMM>/`. Keep it git-ignored unless the project checks such artifacts in (add it to `.git/info/exclude`, not `.gitignore`, when unsure).
+- Always, even for a one-stage chain: every run gets a run directory, a `chain.json` and numbered stage directories. It is the resume point and the audit trail.
+- Location: when the chain works on an existing plan directory, `<planDir>/runs/<YYYY-MM-DDTHHMM>/`. Otherwise the repo's convention for development artifacts if it has one (AGENTS.md/CONTRIBUTING, an existing `plans/` or `.agent-plans/`), else `plans/<name>/runs/<YYYY-MM-DDTHHMM>/`. Keep it git-ignored unless the project checks such artifacts in (add it to `.git/info/exclude`, not `.gitignore`, when unsure).
 - `chain.json`: written by you once, before the first stage — `{prose, stages: [{n, stage, args, pause}], dir}`.
-- `NN-<stage>/`: one directory per stage; `brief.json` (the envelope) plus that stage's details. Pass it as `stageDir`.
+- `NN-<stage>[-<suffix>]/`: one directory per stage, numbered in execution order (`03-execute-wave-0`, `04-execute-step-03`, `05-done-check`); `brief.json` (the envelope) plus that stage's details. Pass it as `stageDir`; never let a workflow fall back to its default directory.
 - Resume after `/new` or in a fresh session: read `chain.json` and the highest-numbered `brief.json`, then continue from the next stage. Do not reconstruct state from memory.
 
 ---
