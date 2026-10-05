@@ -50,21 +50,30 @@ import { spawnSync } from "node:child_process";
 const [wfPath, argsJson, scenarioJson, repo, scripts] = process.argv.slice(2);
 const scenario = JSON.parse(scenarioJson);
 const calls = [];
+// Mirrors pi-subagents scripted-workflow.js: every child settles to a result; runs.run then throws on a failed one
+// (losing structuredOutput/runId), while runs.all with config objects (collectFailure) returns the failed result.
+// "reject" in the scenario is a child that failed with no output. Keys absent from the table reject either way.
+const launch = (key, item, via) => {
+  calls.push({ key, via, agent: item.agent ?? null, resume: item.resume ?? null, hasSchema: !!item.outputSchema, hasAcceptance: !!item.acceptance });
+  if (item.agent === "wf-host-command") {
+    const task = JSON.parse(item.task);
+    const r = spawnSync(scripts + "/" + task.script + ".sh", { input: JSON.stringify(task), cwd: repo, encoding: "utf8" });
+    return Promise.resolve({ ok: r.status === 0, output: r.stdout, runId: key, ...(r.status === 0 ? {} : { error: "exit " + r.status }) });
+  }
+  const resp = scenario[key];
+  if (resp === undefined) return Promise.reject(new Error("unexpected launch " + key));
+  if (resp === "reject") return Promise.resolve({ ok: false, error: "child failed: " + key, runId: "run-" + key });
+  return Promise.resolve({ runId: "run-" + key, ...resp });
+};
 const runs = {
   run(key, item) {
-    calls.push({ key, agent: item.agent ?? null, resume: item.resume ?? null, hasSchema: !!item.outputSchema, hasAcceptance: !!item.acceptance });
-    if (item.agent === "wf-host-command") {
-      const task = JSON.parse(item.task);
-      const r = spawnSync(scripts + "/" + task.script + ".sh", { input: JSON.stringify(task), cwd: repo, encoding: "utf8" });
-      return Promise.resolve({ ok: r.status === 0, output: r.stdout, runId: key });
-    }
-    const resp = scenario[key];
-    if (resp === undefined) return Promise.reject(new Error("unexpected launch " + key));
-    if (resp === "reject") return Promise.reject(new Error("child failed: " + key));
-    return Promise.resolve({ runId: "run-" + key, ...resp });
+    return launch(key, item, "run").then((r) => {
+      const recoverable = r.recovery?.status === "available-for-review" && r.recovery.reason === "acceptance-metadata-rejected";
+      if (!r.ok && r.state !== "running" && !r.stopped && !recoverable) throw new Error("Run '" + key + "' failed: " + (r.error ?? r.output));
+      return r;
+    });
   },
-  // runs.all reports per-child failures instead of rejecting (unlike runs.run).
-  all(items) { return Promise.all(items.map((i) => this.run(i.key, i).then((r) => r, (e) => ({ ok: false, error: e.message, runId: "run-" + i.key })))); }
+  all(items) { return Promise.all(items.map(({ key, ...item }) => launch(key, item, "all"))); }
 };
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const env = await new AsyncFunction("args", "runs", "state", fs.readFileSync(wfPath, "utf8"))(JSON.parse(argsJson), runs, undefined);

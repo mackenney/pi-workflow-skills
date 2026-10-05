@@ -9,6 +9,10 @@
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
+// runs.run's rejection carries only a message; runs.all with a config object returns the full failed result, so a
+// gate-rejected child still reports its validate-plan/classifier output (the next fix round needs those errors).
+// safe() still catches launch errors.
+const one = (key, params) => safe(runs.all([{ key, ...params }]).then((rs) => rs[0]));
 const SKILLS = "${PI_WORKFLOW_SKILLS_DIR:-/home/ignacio/pr/pi-workflow-skills}";
 const ALLOWED_ARGS = ["spec", "planDir", "stageDir", "tier", "mode", "angles", "maxSynthRounds", "plannerModel", "synthModel", "factcheckModel", "fixModel", "fixScope", "notes"];
 const FIX_SCOPES = ["clear", "trivial", "all", "none"];
@@ -94,7 +98,7 @@ while (true) {
         notesLine
       ].filter(Boolean).join("\n");
 
-  synth = await safe(runs.run("synth-" + round, {
+  synth = await one("synth-" + round, {
     agent: "wf-synthesizer", label: "Synthesize plan round " + round, ...pick(args.synthModel),
     task: roundTask, skill: "planner, step-contract",
     // Only round 0 binds planOutputPath: the runtime rejects two children resolving output to the same file.
@@ -104,9 +108,9 @@ while (true) {
       command: SKILLS + "/scripts/validate-plan.sh '" + planOutputPath + "'",
       output: "json", schema: VALIDATE_SCHEMA, timeoutMs: 120000
     }
-  }));
+  });
   validation = synth.structuredOutput; // typed gate's parsed stdout lands in result.structuredOutput
-  if (validation && validation.ok === true) break;
+  if (synth.ok && validation && validation.ok === true) break; // via runs.all a failed child still carries structuredOutput
   round += 1;
   if (round >= maxSynth) {
     { result = { state: "FAIL", stage: "synth", round, validation, error: synth.error }; break main; }
@@ -120,14 +124,14 @@ const CLASSIFY_SCHEMA = {
 };
 // One report path per round: the runtime rejects two children resolving output to the same file.
 let factcheckPath = args.planDir + "/factcheck-0.json";
-let fc = await safe(runs.run("factcheck-0", {
+let fc = await one("factcheck-0", {
   agent: "wf-fact-checker", label: "Fact-check plan", output: factcheckPath, ...pick(args.factcheckModel),
   task: "Fact-check the plan at " + planOutputPath + " against the repo: verify every gate command exists and is runnable, and every cited fact is real. Write a JSON report to your output path: {claims:[{claim, verdict: CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE, evidence}]}." + (notesLine ? "\n" + notesLine : ""),
   gate: {
     command: SKILLS + "/scripts/classify-factcheck.sh '" + factcheckPath + "'",
     output: "json", schema: CLASSIFY_SCHEMA, timeoutMs: 60000
   }
-}));
+});
 let fcClass = fc.structuredOutput; // typed gate's parsed stdout
 // Fail closed: an unusable report (classifier error, no claims, failed run) is not a clean fact-check.
 const fcUnusable = (run, cls) => !run.ok || !cls || cls.error || !(cls.total > 0);
@@ -136,26 +140,26 @@ if (fcUnusable(fc, fcClass)) { result = { state: "FAIL", stage: "factcheck", pla
 // 4. If refuted+partial > 0: one builtin-worker fix pass, then a second fact-check round.
 if (fixScope !== "none" && fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
   // The fix pass rewrites plan.json, step files and sidecars, so it runs under the same validate-plan gate as synthesis.
-  const fix = await safe(runs.run("plan-fix-0", {
+  const fix = await one("plan-fix-0", {
     agent: "worker", skill: "step-contract", label: "Fix plan per fact-check", ...pick(args.fixModel),
     task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars/PROGRESS.md) per the REFUTED/PARTIAL claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + "). " + PLAN_SCOPE_TEXT[fixScope] + " Keep plan.json and every sidecar identical where they overlap." + (notesLine ? "\n" + notesLine : ""),
     gate: {
       command: SKILLS + "/scripts/validate-plan.sh '" + planOutputPath + "'",
       output: "json", schema: VALIDATE_SCHEMA, timeoutMs: 120000
     }
-  }));
+  });
   if (!fix.ok || !fix.structuredOutput || fix.structuredOutput.ok !== true) {
     { result = { state: "FAIL", stage: "plan-fix", planPath: planOutputPath, factcheckPath, validation: fix.structuredOutput, error: fix.error }; break main; }
   }
   factcheckPath = args.planDir + "/factcheck-1.json";
-  fc = await safe(runs.run("factcheck-1", {
+  fc = await one("factcheck-1", {
     agent: "wf-fact-checker", label: "Re-fact-check plan", output: factcheckPath, ...pick(args.factcheckModel),
     task: "Re-verify the plan at " + planOutputPath + " after fixes. Same report schema.",
     gate: {
       command: SKILLS + "/scripts/classify-factcheck.sh '" + factcheckPath + "'",
       output: "json", schema: CLASSIFY_SCHEMA, timeoutMs: 60000
     }
-  }));
+  });
   fcClass = fc.structuredOutput;
   if (fcUnusable(fc, fcClass)) { result = { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error }; break main; }
 }

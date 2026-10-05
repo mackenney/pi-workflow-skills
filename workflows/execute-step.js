@@ -11,6 +11,9 @@
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
+// runs.run's rejection carries only a message: a failed worker's STEP-VERDICT (its commit) and runId would be lost, and
+// resume needs both. runs.all with a config object returns the full failed result; safe() still catches launch errors.
+const one = (key, params) => safe(runs.all([{ key, ...params }]).then((rs) => rs[0]));
 const ALLOWED_ARGS = ["stepFile", "planDir", "baseCommit", "stageDir", "tier", "worker", "pr", "maxFixRounds", "ledgerFile", "notes", "resume"];
 const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
 if (badArgs.length) {
@@ -164,12 +167,12 @@ const resumedVerdict = (gates) => ({
 let impl = { ok: true, runId: R?.workerRunId };
 let verdict = null;
 if (!R) {
-  impl = await safe(runs.run("implement", {
+  impl = await one("implement", {
     agent: workerAgent, label: "Implement " + contract.step, task: workerTask,
     ...(lane.skill ? { skill: lane.skill } : {}),
     outputSchema: STEP_VERDICT,
     acceptance: ACCEPTANCE
-  }));
+  });
   verdict = fixPassless(impl.structuredOutput);
   if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
     // A commit the runtime's gates rejected while the worker claimed PASS points at the environment: re-run gates once it
@@ -201,20 +204,20 @@ if (!R) {
   const findings = prior?.review ? "\nLast REVIEW-VERDICT (verbatim JSON):\n" + JSON.stringify(prior.review) : "";
   const guidance = R.guidance ? "\nUser guidance: " + R.guidance : "";
   if (R.workerRunId) {
-    impl = await safe(runs.run("resume-fix", {
+    impl = await one("resume-fix", {
       resume: R.workerRunId, label: "Resume fix " + contract.step,
       task: "Resuming this step from commit " + resumeCommit + "." + guidance + findings + "\nAddress it, commit, re-run all gates, emit a new STEP-VERDICT.",
       outputSchema: STEP_VERDICT, acceptance: ACCEPTANCE // not inherited on resume; see the fix round below
-    }));
+    });
   }
   // A missing or expired retained worker must not strand the step: a fresh worker picks up from the commit.
   if (!R.workerRunId || (!impl.ok && !impl.structuredOutput)) {
-    impl = await safe(runs.run("resume-fresh", {
+    impl = await one("resume-fresh", {
       agent: workerAgent, label: "Continue " + contract.step,
       task: workerTask + "\nResuming: commit " + resumeCommit + " already holds earlier work on this step. Continue from it (check it out if HEAD differs); do not start over." + guidance + findings,
       ...(lane.skill ? { skill: lane.skill } : {}),
       outputSchema: STEP_VERDICT, acceptance: ACCEPTANCE
-    }));
+    });
   }
   verdict = fixPassless(impl.structuredOutput);
   if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
@@ -238,9 +241,9 @@ if (from !== "ci" && from !== "ledger") {
       ].join("\n"),
       outputSchema: REVIEW_VERDICT
     };
-    review = await safe(runs.run("review-" + round, reviewItem));
+    review = await one("review-" + round, reviewItem);
     // A reviewer crash says nothing about the work: retry once, and never spend a fix round on it.
-    if (!review.ok || !review.structuredOutput) review = await safe(runs.run("review-" + round + "-retry", reviewItem));
+    if (!review.ok || !review.structuredOutput) review = await one("review-" + round + "-retry", reviewItem);
     rv = review.structuredOutput;
     if (!review.ok || !rv) {
       result = { state: "BLOCKED", stage: "review", round, reason: "reviewer failed twice (infrastructure): " + String(review.error ?? "no REVIEW-VERDICT"), verdict, workerRunId: impl.runId, resumePoint: resumeAt("review", verdict.commit, impl.runId) }; break main;
@@ -251,7 +254,7 @@ if (from !== "ci" && from !== "ledger") {
     }
     round += 1;
     const lastCommit = verdict.commit;
-    impl = await safe(runs.run("fix-" + round, {
+    impl = await one("fix-" + round, {
       resume: impl.runId, label: "Fix " + contract.step + " round " + round,
       task: "Reviewer findings (verbatim JSON). Address each, re-run all gates, emit a new STEP-VERDICT:\n" + JSON.stringify(rv),
       // Confirmed live (2026-09-24, toy step-01-hello): `resume` does NOT re-capture `outputSchema`
@@ -262,7 +265,7 @@ if (from !== "ci" && from !== "ledger") {
       // Same reason as outputSchema: resume resolves per-launch fields from the request first, so the host-run gates
       // must be passed again or a fix commit could pass on the worker's own claims.
       acceptance: ACCEPTANCE
-    }));
+    });
     verdict = fixPassless(impl.structuredOutput);
     if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
       result = { state: failState(verdict), stage: "fix", round, runId: impl.runId, verdict, review: rv, error: impl.error, resumePoint: resumeAt("fix", verdict?.commit ?? lastCommit, impl.runId) }; break main;

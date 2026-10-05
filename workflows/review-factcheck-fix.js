@@ -12,6 +12,9 @@
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
+// runs.run's rejection carries only a message; runs.all with a config object returns the full failed result, so a
+// gate-rejected child still reports its classifier output and a failed fix worker its runId. safe() catches launch errors.
+const one = (key, params) => safe(runs.all([{ key, ...params }]).then((rs) => rs[0]));
 const SKILLS = "${PI_WORKFLOW_SKILLS_DIR:-/home/ignacio/pr/pi-workflow-skills}";
 const ALLOWED_ARGS = ["target", "reviewDir", "baseRef", "repo", "angles", "diversityModel", "crossExam", "maxRounds", "stageDir",
   "reviewerModel", "factcheckModel", "fixModel", "fixScope", "notes"];
@@ -128,7 +131,7 @@ for (let round = 0; round < maxRounds; round += 1) {
 
   // 3. Synthesis under the classify-review typed gate. Fresh launch (typed gates are rejected on resume).
   const synthPath = dir + "/synthesis.json";
-  const synth = await safe(runs.run("r" + round + "-synth", {
+  const synth = await one("r" + round + "-synth", {
     agent: "wf-code-reviewer", label: "Review synthesis r" + round, output: synthPath, ...pick(args.reviewerModel),
     task: ["mode: \"synthesis\"", "Target: " + args.target, repoLine, rangeLine,
            "Angle findings files: " + anglePaths.join(", "),
@@ -138,7 +141,7 @@ for (let round = 0; round < maxRounds; round += 1) {
       command: SKILLS + "/scripts/classify-review.sh '" + synthPath + "'",
       output: "json", schema: REVIEW_CLASS_SCHEMA, timeoutMs: 60000
     }
-  }));
+  });
   const reviewClass = synth.structuredOutput;
   if (!synth.ok || !reviewClass || reviewClass.error) {
     { result = { state: "FAIL", stage: "synth", round, reviewClass, error: synth.error, rounds }; break main; }
@@ -153,7 +156,7 @@ for (let round = 0; round < maxRounds; round += 1) {
 
   // 4. Fact-check the synthesis so the fix pass only acts on verified findings.
   const fcPath = dir + "/factcheck.json";
-  const fc = await safe(runs.run("r" + round + "-factcheck", {
+  const fc = await one("r" + round + "-factcheck", {
     agent: "wf-fact-checker", label: "Fact-check review r" + round, output: fcPath, ...pick(args.factcheckModel),
     task: "Fact-check the review synthesis at " + synthPath + " (target: " + args.target + (args.repo ? ", repo " + args.repo : "") +
           "). One claim per blocker/important finding: is the defect real at the cited file:line? Write {claims:[{claim, verdict, evidence}]} to your output path." + (notesLine ? "\n" + notesLine : ""),
@@ -161,7 +164,7 @@ for (let round = 0; round < maxRounds; round += 1) {
       command: SKILLS + "/scripts/classify-factcheck.sh '" + fcPath + "'",
       output: "json", schema: FC_CLASS_SCHEMA, timeoutMs: 60000
     }
-  }));
+  });
   const fcClass = fc.structuredOutput;
 
   const record = { round, synthPath, fcPath, reviewClass, fcClass, diversityModel: args.diversityModel ?? null };
@@ -181,14 +184,14 @@ for (let round = 0; round < maxRounds; round += 1) {
     clear: "Fix a blocker/important finding in " + synthPath + " only if its fix is unambiguous: one obviously right change, no design choice, no behaviour or contract change beyond the defect. Escalate (do not fix) any finding that needs a judgement call: competing fixes, API/behaviour change, scope beyond the finding, or you disagree with it.",
     trivial: "Fix only trivial items in " + synthPath + " (blockers, important and nits alike): typos, stale paths/names, doc or comment drift, one-line mechanical corrections with no behaviour change. Escalate every other blocker/important finding; leave other nits alone."
   };
-  const fix = await safe(runs.run("r" + round + "-fix", {
+  const fix = await one("r" + round + "-fix", {
     agent: "worker", skill: "step-contract", label: "Fix review findings r" + round + " (" + fixScope + ")", ...pick(args.fixModel),
     task: ["Target: " + args.target, repoLine, rangeLine, SCOPE_TEXT[fixScope],
            "Skip any finding the fact-check at " + fcPath + " marks REFUTED; for DISPUTED/UNVERIFIABLE ones, fix only if you can confirm the defect yourself.",
            "Re-run the repo's relevant tests/lint after fixing and, if you changed anything, commit with an imperative message.",
            "Return fixed (titles), escalated ({title, why}: needs the user) and skipped ({title, why}: refuted/unconfirmed/out of scope nits).", notesLine].filter(Boolean).join("\n"),
     outputSchema: FIX_REPORT
-  }));
+  });
   const fixReport = fix.structuredOutput;
   record.fix = { ok: fix.ok, runId: fix.runId, error: fix.error, report: fixReport ?? null };
   if (!fix.ok || !fixReport) {
