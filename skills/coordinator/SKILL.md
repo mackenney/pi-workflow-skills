@@ -21,7 +21,7 @@ The user writes "coordinator" or `/skill:coordinator`, usually with a chain diag
 
 **Read envelopes, not artifacts.** Every stage returns the envelope below. Decide from `status`, `summary` and `actionables`; open an artifact only when an actionable requires it or the user asks.
 
-**Delegate everything substantive.** You never implement, plan or review yourself. Direct edits only for a trivial single-file change in 1–2 tool calls (typo, stale path, comment). If unsure, delegate.
+**Every named stage runs as a stage.** A segment the user wrote in the chain (fact-checker, fix, planner, …) always runs through its mechanism in the Stage Table and produces a brief, however small the input; never do a named stage's work inline. Outside named stages you never implement, plan or review yourself; direct edits only for a trivial single-file change in 1–2 tool calls (typo, stale path, comment). If unsure, delegate.
 
 **Pass paths, never content.** A stage's inputs are earlier stages' `artifacts` paths plus allowed overrides. Never paste a report, plan or diff into a task.
 
