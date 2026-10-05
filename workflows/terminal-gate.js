@@ -5,6 +5,16 @@
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
+const ALLOWED_ARGS = ["planDir", "ledgerFile", "pr", "repo", "waitSeconds", "expectSha", "stageDir"];
+const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
+if (badArgs.length) {
+  // A misspelled or invented arg must not be dropped silently.
+  const why = "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")";
+  const env = { stage: "done-check", status: "blocked", summary: why.slice(0, 400), actionables: [{ what: why.slice(0, 300), kind: "fix", ref: "workflows/terminal-gate.js" }], artifacts: { primary: "workflows/terminal-gate.js" } };
+  if (args.stageDir) await safe(runs.run("persist-args", { agent: "wf-host-command", label: "Persist arg error",
+    task: JSON.stringify({ script: "write-artifact", path: args.stageDir + "/brief.json", json: env }) }));
+  return env;
+}
 const run = await safe(runs.run("terminal-gate", {
   agent: "wf-host-command", label: "Terminal gate " + args.planDir,
   task: JSON.stringify({ script: "terminal-gate", planDir: args.planDir, ledgerFile: args.ledgerFile, pr: args.pr, repo: args.repo, waitSeconds: args.waitSeconds ?? 0, expectSha: args.expectSha }),

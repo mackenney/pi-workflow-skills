@@ -212,5 +212,32 @@ chmod 600 "$T/settings.json"
 node "$S/generate-tier-overrides.mjs" --apply --agents-md "$T/AGENTS.md" --settings "$T/settings.json" --package-dir "$ROOT" >/dev/null 2>&1
 if [ "$(stat -c %a "$T/settings.json")" = 600 ] && [ -f "$T/tier-overrides.state.json" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: generator --apply: mode $(stat -c %a "$T/settings.json"), state beside settings: $([ -f "$T/tier-overrides.state.json" ] && echo yes || echo no)"; fi
 
+# validate-chain: every meaningful prose word is mapped; args must be ones the workflow accepts
+vc() { printf '%s' "$1" > "$T/chain.json"; "$S/validate-chain.sh" "$T/chain.json"; }
+VC_OK='{"prose":"code-reviewer frontier -> fix only trivial stuff, x1","status":"ready","questions":[],
+ "stages":[{"n":1,"stage":"review","args":{"reviewerModel":"anthropic/claude-fable-5-1:high","fixScope":"trivial","maxRounds":1}}],
+ "mapping":[{"from":"code-reviewer","to":"stage:review","confidence":"exact"},{"from":"frontier","to":"review.reviewerModel=anthropic/claude-fable-5-1:high","confidence":"exact"},
+  {"from":"fix only trivial stuff","to":"review.fixScope=trivial","confidence":"inferred"},{"from":"x1","to":"review.maxRounds=1","confidence":"exact"}]}'
+check "vc: fully mapped chain ok" '.ok == true and .status == "ready" and (.inferred | length) == 1' "$(vc "$VC_OK")"
+check "vc: dropped word -> uncovered" '.ok == false and .uncovered == ["frontier"]' "$(vc "$(jq -c '.mapping |= map(select(.from != "frontier"))' <<< "$VC_OK")")"
+check "vc: unknown arg rejected" '.ok == false and (.errors[0] | test("reviewerModle"))' "$(vc "$(jq -c '.stages[0].args.reviewerModle = 1' <<< "$VC_OK")")"
+check "vc: mapped but not applied" '.ok == false and (.errors[0] | test("not applied"))' "$(vc "$(jq -c 'del(.stages[0].args.fixScope)' <<< "$VC_OK")")"
+check "vc: invented from rejected" '.ok == false and (.errors[0] | test("verbatim"))' "$(vc "$(jq -c '.mapping += [{"from":"with gpt","to":"x","confidence":"exact"}]' <<< "$VC_OK")")"
+check "vc: ambiguous needs questions" '.ok == false and (.errors[0] | test("without questions"))' "$(vc "$(jq -c '.mapping[1].confidence = "ambiguous"' <<< "$VC_OK")")"
+check "vc: questions force ask" '.ok == true and .status == "ask"' "$(vc "$(jq -c '.mapping[1].confidence = "ambiguous" | .status = "ask" | .questions = [{"about":"frontier","options":["reviewer model","plan tier"]}]' <<< "$VC_OK")")"
+check "vc: ignored needs a reason" '.ok == false and (.errors[0] | test("reason"))' "$(vc "$(jq -c '.mapping[1] = {"from":"frontier","confidence":"ignored"}' <<< "$VC_OK")")"
+check "vc: unknown stage" '.ok == false and (.errors[0] | test("unknown stage"))' "$(vc "$(jq -c '.stages[0].stage = "revue"' <<< "$VC_OK")")"
+
+# every workflow declares ALLOWED_ARGS and returns a blocked envelope for unknown args (no silent drops)
+for wf in "$ROOT"/workflows/*.js; do
+  if grep -q 'const ALLOWED_ARGS = ' "$wf" && grep -q 'badArgs.length' "$wf"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $(basename "$wf") lacks the ALLOWED_ARGS guard"; fi
+done
+# every arg a workflow reads is in its ALLOWED_ARGS (a read-but-rejected arg would make the guard block valid calls)
+for wf in "$ROOT"/workflows/*.js; do
+  allowed="$(tr '\n' ' ' < "$wf" | grep -o 'const ALLOWED_ARGS = \[[^]]*\]' | sed 's/.*= //' | jq -r '.[]' 2>/dev/null)"
+  missing="$(grep -o -E 'args\.[a-zA-Z]+' "$wf" | sed 's/args\.//' | sort -u | grep -v -x -F "$allowed")"
+  if [ -z "$missing" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $(basename "$wf") reads args not in ALLOWED_ARGS: $missing"; fi
+done
+
 echo "scripts.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

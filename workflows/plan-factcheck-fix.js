@@ -1,14 +1,28 @@
 // Returns the stage envelope; full result in <stageDir>/result.json (stageDir defaults under <planDir>/runs/).
 // args: { spec: "/abs/spec.md", planDir: "/abs/plans/x", stageDir?: "/abs/run/NN-plan", tier?: "deep"|"standard"|"fast" (planning effort; step tiers are validated separately),
-//         mode?: "structural"|"simple", angles?: number|[], maxSynthRounds?: 3 }
+//         mode?: "structural"|"simple", angles?: number|[] (default 3 unless mode "simple"), maxSynthRounds?: 3,
+//         plannerModel?/synthModel?/factcheckModel?/fixModel?: "<provider/id[:thinking]>", notes?: "<user intent, appended to every child task>" }
+// Unknown args return a blocked envelope: a misspelled or invented arg must not be dropped silently.
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Gate commands run through the host shell, so the env override expands there (isolated test installs set it).
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 const SKILLS = "${PI_WORKFLOW_SKILLS_DIR:-/home/ignacio/pr/pi-workflow-skills}";
-
-const angles = Array.isArray(args.angles) ? args.angles : (args.angles ? Array.from({ length: args.angles }, (_, i) => i + 1) : []);
+const ALLOWED_ARGS = ["spec", "planDir", "stageDir", "tier", "mode", "angles", "maxSynthRounds", "plannerModel", "synthModel", "factcheckModel", "fixModel", "notes"];
+const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
+if (badArgs.length || !args.planDir || !args.spec) {
+  const why = badArgs.length ? "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")" : "spec and planDir are required";
+  const env = { stage: "plan", status: "blocked", summary: why.slice(0, 400), actionables: [{ what: why.slice(0, 300), kind: "fix", ref: "workflows/plan-factcheck-fix.js" }], artifacts: { primary: "workflows/plan-factcheck-fix.js" } };
+  if (args.stageDir) await safe(runs.run("persist-args", { agent: "wf-host-command", label: "Persist plan arg error",
+    task: JSON.stringify({ script: "write-artifact", path: args.stageDir + "/brief.json", json: env }) }));
+  return env;
+}
+const notesLine = args.notes ? "User notes for this stage: " + args.notes : "";
+const pick = (m) => (m ? { model: m } : {});
+// The coordinator's table documents 3 angles as the default; only mode "simple" (or angles: 0) skips them.
+const angleCount = args.mode === "simple" ? 0 : (args.angles ?? 3);
+const angles = Array.isArray(angleCount) ? angleCount : Array.from({ length: angleCount }, (_, i) => i + 1);
 const tier = args.tier ?? "deep";
 const simple = args.mode === "simple" || angles.length === 0;
 
@@ -26,8 +40,10 @@ if (!simple) {
         "Spec/investigation: " + args.spec,
         "Executor tier: " + tier,
         "Angle " + n + " of " + angles.length + " - propose an independent structural decomposition.",
-        "Write your plan-summary and step files under " + args.planDir + "/angle-" + n + "/"
-      ].join("\n"),
+        "Write your plan-summary and step files under " + args.planDir + "/angle-" + n + "/",
+        notesLine
+      ].filter(Boolean).join("\n"),
+      ...pick(args.plannerModel),
       output: args.planDir + "/angle-" + n + "/plan-summary.md"
     }))
   );
@@ -55,19 +71,21 @@ while (true) {
         ...(simple ? [] : angleOutputs.filter((a) => a.ok).map((a) => "Angle " + a.angle + " output: " + a.output)),
         "Spec/investigation: " + args.spec,
         "Executor tier: " + tier,
-        "Write the unified plan (step files + *.gates.json sidecars) under " + args.planDir + "/, and a single machine-readable index at " + planOutputPath + " (schema: {steps:[{id,tier,files,gates,coverage,hard_splits_declared}]}), and PROGRESS.md (step-contract ledger sections + ## Steps checklist)."
-      ].join("\n")
+        "Write the unified plan (step files + *.gates.json sidecars) under " + args.planDir + "/, and a single machine-readable index at " + planOutputPath + " (schema: {steps:[{id,tier,files,gates,coverage,hard_splits_declared}]}), and PROGRESS.md (step-contract ledger sections + ## Steps checklist).",
+        notesLine
+      ].filter(Boolean).join("\n")
     : [
         "Mode: plan. Fix round " + round + ".",
         "Spec/investigation: " + args.spec,
         ...(simple ? [] : angleOutputs.filter((a) => a.ok).map((a) => "Angle " + a.angle + " output: " + a.output)),
         "Your previous plan output: " + planOutputPath,
         "validate-plan.sh errors to fix:", JSON.stringify(validation?.errors ?? []),
-        "Rewrite " + planOutputPath + " (and the affected step files/sidecars) to resolve every listed error."
-      ].join("\n");
+        "Rewrite " + planOutputPath + " (and the affected step files/sidecars) to resolve every listed error.",
+        notesLine
+      ].filter(Boolean).join("\n");
 
   synth = await safe(runs.run("synth-" + round, {
-    agent: "wf-synthesizer", label: "Synthesize plan round " + round,
+    agent: "wf-synthesizer", label: "Synthesize plan round " + round, ...pick(args.synthModel),
     task: roundTask, skill: "planner, step-contract",
     // Only round 0 binds planOutputPath: the runtime rejects two children resolving output to the same file.
     // Fix rounds rewrite it in place (task text); the gate re-validates that path either way.
@@ -93,8 +111,8 @@ const CLASSIFY_SCHEMA = {
 // One report path per round: the runtime rejects two children resolving output to the same file.
 let factcheckPath = args.planDir + "/factcheck-0.json";
 let fc = await safe(runs.run("factcheck-0", {
-  agent: "wf-fact-checker", label: "Fact-check plan", output: factcheckPath,
-  task: "Fact-check the plan at " + planOutputPath + " against the repo: verify every gate command exists and is runnable, and every cited fact is real. Write a JSON report to your output path: {claims:[{claim, verdict: CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE, evidence}]}.",
+  agent: "wf-fact-checker", label: "Fact-check plan", output: factcheckPath, ...pick(args.factcheckModel),
+  task: "Fact-check the plan at " + planOutputPath + " against the repo: verify every gate command exists and is runnable, and every cited fact is real. Write a JSON report to your output path: {claims:[{claim, verdict: CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE, evidence}]}." + (notesLine ? "\n" + notesLine : ""),
   gate: {
     command: SKILLS + "/scripts/classify-factcheck.sh '" + factcheckPath + "'",
     output: "json", schema: CLASSIFY_SCHEMA, timeoutMs: 60000
@@ -109,7 +127,7 @@ if (fcUnusable(fc, fcClass)) { result = { state: "FAIL", stage: "factcheck", pla
 if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
   // The fix pass rewrites plan.json, step files and sidecars, so it runs under the same validate-plan gate as synthesis.
   const fix = await safe(runs.run("plan-fix-0", {
-    agent: "worker", skill: "step-contract", label: "Fix plan per fact-check",
+    agent: "worker", skill: "step-contract", label: "Fix plan per fact-check", ...pick(args.fixModel),
     task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars/PROGRESS.md) per the REFUTED/PARTIAL claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + "). Keep plan.json and every sidecar identical where they overlap.",
     gate: {
       command: SKILLS + "/scripts/validate-plan.sh '" + planOutputPath + "'",
@@ -121,7 +139,7 @@ if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
   }
   factcheckPath = args.planDir + "/factcheck-1.json";
   fc = await safe(runs.run("factcheck-1", {
-    agent: "wf-fact-checker", label: "Re-fact-check plan", output: factcheckPath,
+    agent: "wf-fact-checker", label: "Re-fact-check plan", output: factcheckPath, ...pick(args.factcheckModel),
     task: "Re-verify the plan at " + planOutputPath + " after fixes. Same report schema.",
     gate: {
       command: SKILLS + "/scripts/classify-factcheck.sh '" + factcheckPath + "'",

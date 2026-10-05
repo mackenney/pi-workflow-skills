@@ -4,6 +4,14 @@
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
+const ALLOWED_ARGS = ["prs", "repo", "waitSeconds"];
+const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
+if (badArgs.length) {
+  // A misspelled or invented arg must not be dropped silently.
+  const why = "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")";
+  const env = { stage: "stack-ci", status: "blocked", summary: why.slice(0, 400), actionables: [{ what: why.slice(0, 300), kind: "fix", ref: "workflows/stack-ci-gate.js" }], artifacts: { primary: "workflows/stack-ci-gate.js" } };
+  return env;
+}
 if (!Array.isArray(args.prs) || args.prs.length === 0) return { ok: false, error: "args.prs must be a non-empty array" };
 const results = [];
 for (const pr of args.prs) {

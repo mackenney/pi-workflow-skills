@@ -1,5 +1,5 @@
 // args: { planDir: "/abs/plans/x", stepFiles: ["/abs/plans/x/step-03-a.md", ...] (independent atomic steps of one wave),
-//         baseCommit?: "abc123", tier?: "standard"|"deep"|"fast", ledgerFile?: "PROGRESS.md", stageDir?: "/abs/run/NN-execute" }
+//         baseCommit?: "abc123", tier?: "standard"|"deep"|"fast", ledgerFile?: "PROGRESS.md", stageDir?: "/abs/run/NN-execute", notes?: "<user intent, appended to worker tasks>" }
 // Returns the stage envelope; the lane board goes to <stageDir>/result.json (read by ledger-apply's fromResult).
 // One lane per independent step, each worker in its own managed git worktree (source checkout must be clean).
 // No fix rounds here: a failed lane is re-run by the parent through execute-step.js.
@@ -9,6 +9,16 @@
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
+const ALLOWED_ARGS = ["stepFiles", "planDir", "baseCommit", "stageDir", "tier", "ledgerFile", "notes"];
+const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
+if (badArgs.length) {
+  // A misspelled or invented arg must not be dropped silently.
+  const why = "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")";
+  const env = { stage: "execute-wave", status: "blocked", summary: why.slice(0, 400), actionables: [{ what: why.slice(0, 300), kind: "fix", ref: "workflows/execute-wave.js" }], artifacts: { primary: "workflows/execute-wave.js" } };
+  if (args.stageDir) await safe(runs.run("persist-args", { agent: "wf-host-command", label: "Persist arg error",
+    task: JSON.stringify({ script: "write-artifact", path: args.stageDir + "/brief.json", json: env }) }));
+  return env;
+}
 
 const WORKER_BY_TIER = {
   deep: { agent: "wf-structural-worker" },
@@ -86,8 +96,9 @@ const workers = await runs.all(contracts.map((c, i) => {
       "Base commit for fails-before checks: " + (args.baseCommit ?? c.base_commit ?? "HEAD"),
       "You are in an isolated git worktree. Commit your work there; report the commit sha in STEP-VERDICT.commit.",
       "Never edit the step file, its gate sidecar, plan.json or PROGRESS.md. If a gate is wrong or cannot pass with a correct implementation, return FAIL and explain it under pending_decisions.",
-      "Executor tier: " + tier + ". Follow the step-contract skill exactly."
-    ].join("\n"),
+      "Executor tier: " + tier + ". Follow the step-contract skill exactly.",
+      args.notes ? "User notes for this wave: " + args.notes : ""
+    ].filter(Boolean).join("\n"),
     outputSchema: STEP_VERDICT,
     acceptance: {
       level: "verified",

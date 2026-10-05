@@ -1,5 +1,5 @@
 // args: { stepFile: "/abs/plans/x/step-07-name.md", planDir: "/abs/plans/x", baseCommit?: "abc123", stageDir?: "/abs/run/NN-execute",
-//         tier?: "deep"|"standard"|"fast", worker?: "<agent name>", pr?: 123, maxFixRounds?: 2, ledgerFile?: "PROGRESS.md" }
+//         tier?: "deep"|"standard"|"fast", worker?: "<agent name>", pr?: 123, maxFixRounds?: 2, ledgerFile?: "PROGRESS.md", notes?: "<user intent, appended to the worker task>" }
 // Returns the stage envelope {stage, status, summary, actionables, artifacts} (skills/coordinator/SKILL.md); the full
 // result goes to <stageDir>/result.json and the envelope to <stageDir>/brief.json.
 // Ledger: once the review passes, this workflow applies the typed verdict to <planDir>/<ledgerFile> through the
@@ -8,6 +8,16 @@
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
+const ALLOWED_ARGS = ["stepFile", "planDir", "baseCommit", "stageDir", "tier", "worker", "pr", "maxFixRounds", "ledgerFile", "notes"];
+const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
+if (badArgs.length) {
+  // A misspelled or invented arg must not be dropped silently.
+  const why = "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")";
+  const env = { stage: "execute-step", status: "blocked", summary: why.slice(0, 400), actionables: [{ what: why.slice(0, 300), kind: "fix", ref: "workflows/execute-step.js" }], artifacts: { primary: "workflows/execute-step.js" } };
+  if (args.stageDir) await safe(runs.run("persist-args", { agent: "wf-host-command", label: "Persist arg error",
+    task: JSON.stringify({ script: "write-artifact", path: args.stageDir + "/brief.json", json: env }) }));
+  return env;
+}
 
 // Tier -> agent. Models are NOT named here; each agent's model comes from the generated agentOverrides (§3.2).
 const WORKER_BY_TIER = {
@@ -83,8 +93,9 @@ const workerTask = [
   // Observed 2026-10-05: a worker "fixed" an impossible gate by editing the sidecar. The runtime still failed it (verify is
   // loaded before launch), but the plan must stay untouched: a wrong gate is the human's call.
   "Never edit the step file, its gate sidecar, plan.json or PROGRESS.md. If a gate is wrong or cannot pass with a correct implementation, return FAIL and explain it under pending_decisions.",
-  "Executor tier: " + tier + ". Follow the step-contract skill exactly."
-].join("\n");
+  "Executor tier: " + tier + ". Follow the step-contract skill exactly.",
+  args.notes ? "User notes for this step: " + args.notes : ""
+].filter(Boolean).join("\n");
 
 // 2. Worker. The runtime executes every gate command itself (acceptance.verify); the model's claims are evidence, not verdict.
 //    If the fast lane is still disabled, this launch fails with an unknown-agent error: enable wf-flash-worker for a measured plan first.

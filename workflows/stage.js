@@ -1,11 +1,14 @@
 // Generic single-agent stage: one child, strict envelope out. The coordinator never carries the schema itself, so it
 // cannot drop it (observed 2026-10-05: after one rejected structured_output the parent launched later stages without it).
 // args: { stage: "spec", agent: "wf-synthesizer", task: "...", stageDir: "/abs/run/NN-spec",
-//         skill?: "specifier", detailFile?: "spec.md" | "/abs/path", model?: "<provider/id>", helpers?: [ {agent, task, file, skill?}, ... ] }
+//         skill?: "specifier", detailFile?: "spec.md" | "/abs/path", model?: "<provider/id[:thinking]>", helpers?: [ {agent, task, file, skill?}, ... ],
+//         notes?: "<user intent with no dedicated arg; appended to the task>" }
+// Unknown args return a blocked envelope: a misspelled or invented arg must not be dropped silently.
 // helpers: optional parallel read-only children (e.g. investigation scouts) that write markdown to <stageDir>/<file>;
 //          no schema on them (small models reject it); the main child receives their paths.
 // Returns the envelope; <stageDir>/brief.json holds it (written by this script, not by the child). A child that fails or returns an invalid envelope is retried once
-// on `delegate`; if that also fails, this script writes a `blocked` envelope itself.
+// with the same agent, model and skill (a retry on a weaker role would silently downgrade the stage); if that also fails,
+// this script writes a `blocked` envelope itself.
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
@@ -22,6 +25,15 @@ const ENVELOPE = {
       properties: { primary: { type: "string" }, details: { type: "array", items: { type: "string" } } } }
   }
 };
+const ALLOWED_ARGS = ["stage", "agent", "task", "stageDir", "skill", "detailFile", "model", "helpers", "notes"];
+const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
+if (badArgs.length || !args.stage || !args.agent || !args.stageDir) {
+  const why = badArgs.length ? "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")" : "stage, agent and stageDir are required";
+  const env = { stage: String(args.stage ?? "stage"), status: "blocked", summary: why.slice(0, 400), actionables: [{ what: why.slice(0, 300), kind: "fix", ref: "workflows/stage.js" }], artifacts: { primary: "workflows/stage.js" } };
+  if (args.stageDir) await safe(runs.run("persist-args", { agent: "wf-host-command", label: "Persist stage arg error",
+    task: JSON.stringify({ script: "write-artifact", path: args.stageDir + "/brief.json", json: env }) }));
+  return env;
+}
 const brief = args.stageDir + "/brief.json";
 const detail = !args.detailFile ? args.stageDir + "/" + args.stage + ".md" : args.detailFile.startsWith("/") ? args.detailFile : args.stageDir + "/" + args.detailFile;
 
@@ -42,7 +54,7 @@ const contract = [
   "Then return the stage envelope through structured_output: stage \"" + args.stage + "\"; status done | needs-decision (the user must decide something) | failed | blocked;",
   "summary at most 3 lines; actionables = only what the parent must act on (kind decision | fix | info, ref = file#anchor); artifacts.primary = " + detail + "."
 ].join("\n");
-const task = [args.task, helperPaths.length ? "Helper findings to merge: " + helperPaths.join(", ") : "", contract].filter(Boolean).join("\n\n");
+const task = [args.task, args.notes ? "User notes for this stage: " + args.notes : "", helperPaths.length ? "Helper findings to merge: " + helperPaths.join(", ") : "", contract].filter(Boolean).join("\n\n");
 
 // Valid = a schema-conforming envelope AND the detail file the task demanded actually exists.
 // (the sandbox forbids nested async helpers, so the check is inlined after each run)
@@ -59,23 +71,23 @@ let run = await safe(runs.run("main", {
 const chkMain = await safe(runs.run("check-main", { agent: "wf-host-command", label: "Check " + args.stage + " detail file", task: CHECK_TASK }));
 let ok = schemaOk(run) && !missingFrom(chkMain);
 let fallback = null;
-if (!ok && args.agent !== "delegate") {
+if (!ok) {
   fallback = { agent: args.agent, error: run.error ?? (schemaOk(run) ? "detail file " + detail + " not written" : "no valid envelope") };
   // Own output path: the runtime rejects two children resolving output to the same file.
   run = await safe(runs.run("main-retry", {
-    agent: "delegate", label: args.stage + " (retry on delegate)", task, outputSchema: ENVELOPE,
-    ...(args.skill ? { skill: args.skill } : {})
+    agent: args.agent, label: args.stage + " (retry)", task, outputSchema: ENVELOPE,
+    ...(args.skill ? { skill: args.skill } : {}), ...(args.model ? { model: args.model } : {})
   }));
   const chkRetry = await safe(runs.run("check-retry", { agent: "wf-host-command", label: "Check " + args.stage + " detail file (retry)", task: CHECK_TASK }));
   ok = schemaOk(run) && !missingFrom(chkRetry);
 }
 let envelope = ok ? { ...run.structuredOutput, artifacts: { ...run.structuredOutput.artifacts, primary: detail } } : {
   stage: args.stage, status: "blocked",
-  summary: "stage child returned no valid envelope or no detail file" + (fallback ? " (also after a retry on delegate)" : "") + ".",
+  summary: "stage child returned no valid envelope or no detail file" + (fallback ? " (also after one retry)" : "") + ".",
   actionables: [{ what: String((schemaOk(run) ? "detail file not written: " + detail : run?.error) ?? fallback?.error ?? "unknown error").slice(0, 300), kind: "fix", ref: args.stageDir }],
   artifacts: { primary: detail, details: helperPaths }
 };
-if (fallback && ok) envelope = { ...envelope, actionables: [{ what: args.agent + " failed (" + String(fallback.error).slice(0, 120) + "); delegate completed the stage", kind: "info", ref: args.stageDir }, ...envelope.actionables].slice(0, 12) };
+if (fallback && ok) envelope = { ...envelope, actionables: [{ what: args.agent + " failed once (" + String(fallback.error).slice(0, 120) + "); the retry completed the stage", kind: "info", ref: args.stageDir }, ...envelope.actionables].slice(0, 12) };
 if (helperPaths.length) envelope = { ...envelope, artifacts: { ...envelope.artifacts, details: [...new Set([...(envelope.artifacts.details ?? []), ...helperPaths])] } };
 // brief.json is always the final envelope (retry or synthesized), whatever the child wrote.
 await safe(runs.run("persist", { agent: "wf-host-command", label: "Persist " + args.stage + " brief",

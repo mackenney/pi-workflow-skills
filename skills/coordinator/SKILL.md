@@ -9,15 +9,15 @@ You are playing the **Coordinator** role. This installs a persistent protocol fo
 
 ## Activation
 
-The user writes "coordinator" or `/skill:coordinator`, usually with a chain diagram in prose. The prose is intent, not a grammar.
+The user writes "coordinator" or `/skill:coordinator`, usually with a chain diagram in prose. The prose is intent, not a grammar: read it as a person would, including typos, shorthand and loose wording. `stage(arg; arg)` is optional sugar with equally loose args (`code-reviewer(frontier; only trivial fixes)`). Your job is to interpret fuzzily **and account for every word** (Compiling).
 
 ---
 
 ## Core Protocol
 
-**Compile, list, go.** Map the chain to stages (Stage Table), print the compiled run in one line per stage, then start immediately. The user interrupts if something looks off; do not wait for approval.
+**Compile, list, go.** Map the chain to stages (Stage Table), record every reading in `chain.json`, pass `validate-chain`, print the compiled run, then start immediately. The user interrupts if something looks off; do not wait for approval. The one exception: if any reading is `ambiguous` (or a required input is unknowable), ask first and launch nothing.
 
-**Pause only when asked or when judgement is needed.** Stop where the user said ("report after planner", "stop before executor") or when a stage returns `needs-decision`, or `failed`/`blocked` with no mechanical fix. Otherwise continue through the chain.
+**Pause only when asked or when judgement is needed.** Stop before the first stage when compiling produced questions. Stop where the user said ("report after planner", "stop before executor") or when a stage returns `needs-decision`, or `failed`/`blocked` with no mechanical fix. Otherwise continue through the chain.
 
 **Read envelopes, not artifacts.** Every stage returns the envelope below. Decide from `status`, `summary` and `actionables`; open an artifact only when an actionable requires it or the user asks.
 
@@ -52,7 +52,7 @@ Every stage returns, and every child you launch directly must return, exactly th
 - `actionables`: `decision` = needs the user; `fix` = mechanical next work; `info` = worth knowing. `ref` points at the file (and anchor) holding the detail.
 - `artifacts.primary`: the main output (report, spec, plan.json, PROGRESS.md); `details`: supporting files.
 
-The workflows return this envelope themselves and write `brief.json` (+ `result.json`) in their stage directory. Single-agent stages run through `stage.js`, which attaches the schema, retries once on `delegate` if the child returns no valid envelope, and writes a `blocked` envelope itself if that fails. You never launch a stage child directly and never pass the schema yourself. If a segment truly needs an ad-hoc child, launch it through `stage.js` too.
+The workflows return this envelope themselves and write `brief.json` (+ `result.json`) in their stage directory. Single-agent stages run through `stage.js`, which attaches the schema, retries once with the same agent and model if the child returns no valid envelope, and writes a `blocked` envelope itself if that fails. Every workflow rejects args it does not know with a `blocked` envelope. You never launch a stage child directly and never pass the schema yourself. If a segment truly needs an ad-hoc child, launch it through `stage.js` too.
 
 ---
 
@@ -62,34 +62,53 @@ The workflows return this envelope themselves and write `brief.json` (+ `result.
 
 | Stage | User may write | Mechanism | Inputs → args | Overrides |
 |---|---|---|---|---|
-| **investigate** | investigator, investigate X, find out why | `stage.js` `{stage: "investigate", agent: "delegate", skill: "investigator", detailFile: "findings.md", helpers: [1–5 × {agent: "scout", task: <one angle each, per the investigator skill>, file: "scout-N.md"}]}` | topic text, scope paths | scout count, angles |
-| **spec** | specifier, spec, write a spec | `stage.js` `{stage: "spec", agent: "wf-synthesizer", skill: "specifier", task: "Mode: spec. …", detailFile: <spec path>}` | findings path (or user's description) → spec path (repo convention, else `<planDir>/SPEC.md`) | — |
-| **fact-check-doc** | fact-checker (after anything that is not plan/review) | `stage.js` `{stage: "fact-check-doc", agent: "wf-fact-checker", detailFile: "factcheck.json", task: "… write {claims:[{claim, verdict, evidence}]} …"}` | document path | — |
-| **fix** | fix (after fact-check-doc) | `stage.js` `{stage: "fix", agent: "worker", detailFile: "fix-notes.md", task: <fix REFUTED/PARTIAL items in the checked document only; skip DISPUTED/UNVERIFIABLE unless confirmed>}` | document + fact-check paths | — |
-| **plan** | planner, plan it, `planner -> fact-checker -> fix` | workflow `plan-factcheck-fix.js` (fact-check and fix are built in) | `spec`, `planDir` | `angles` (2–4, default 3), `mode: "simple"`, `tier` |
-| **execute** | executor, implement, run the plan | per wave, workflow `execute-step.js` (one step) or `execute-wave.js` (independent steps, clean checkout) per the `executor` skill; ends with **done-check** | `planDir`, `stepFile(s)` | `tier`, `pr` |
-| **review** | code-reviewer, `(code-reviewer -> fact-checker -> fix) xN` | workflow `review-factcheck-fix.js` (fact-check and fix built in; stops at the first clean round) | `repo`, `baseRef` (start of the change), `target` (one line), `reviewDir` = `<stageDir>` | `maxRounds` = N (default 2), `crossExam` (default true; false for "no x-check"), `diversityModel` ("with gpt" → `openai/gpt-6-sol`) |
-| **e2e** | e2e-tester, test it end to end | `stage.js` `{stage: "e2e", agent: "worker", skill: "e2e-tester", detailFile: "e2e-report.md"}` | spec/plan paths, how to reach the running stack | — |
+| **investigate** | investigator, investigate X, find out why | `stage.js` `{stage: "investigate", agent: "delegate", skill: "investigator", detailFile: "findings.md", helpers: [1–5 × {agent: "scout", task: <one angle each, per the investigator skill>, file: "scout-N.md"}]}` | topic text, scope paths | scout count and angles (as `helpers` entries), `model`, `notes` |
+| **spec** | specifier, spec, write a spec | `stage.js` `{stage: "spec", agent: "wf-synthesizer", skill: "specifier", task: "Mode: spec. …", detailFile: <spec path>}` | findings path (or user's description) → spec path (repo convention, else `<planDir>/SPEC.md`) | `model`, `notes` |
+| **fact-check-doc** | fact-checker (after anything that is not plan/review) | `stage.js` `{stage: "fact-check-doc", agent: "wf-fact-checker", detailFile: "factcheck.json", task: "… write {claims:[{claim, verdict, evidence}]} …"}` | document path | `model`, `notes` |
+| **fix** | fix (after fact-check-doc) | `stage.js` `{stage: "fix", agent: "worker", detailFile: "fix-notes.md", task: <fix REFUTED/PARTIAL items in the checked document only; skip DISPUTED/UNVERIFIABLE unless confirmed>}` | document + fact-check paths | `model`, `notes` (scope words like "only typos" go in the task and in `notes`) |
+| **plan** | planner, plan it, `planner -> fact-checker -> fix` | workflow `plan-factcheck-fix.js` (fact-check and fix are built in) | `spec`, `planDir` | `angles` (2–4, default 3), `mode: "simple"`, `tier` (executor tier the steps are sized for), `plannerModel`, `synthModel`, `factcheckModel`, `fixModel`, `notes` |
+| **execute** | executor, implement, run the plan | per wave, workflow `execute-step.js` (one step) or `execute-wave.js` (independent steps, clean checkout) per the `executor` skill; ends with **done-check** | `planDir`, `stepFile(s)` | `tier`, `pr`, `notes` |
+| **review** | code-reviewer, `(code-reviewer -> fact-checker -> fix) xN` | workflow `review-factcheck-fix.js` (fact-check and fix built in; stops at the first clean round) | `repo`, `baseRef` (start of the change), `target` (one line), `reviewDir` = `<stageDir>` | `maxRounds` = N (default 2), `crossExam` (default true; false for "no x-check"), `diversityModel` ("with gpt" → `openai/gpt-6-sol`), `reviewerModel`, `factcheckModel`, `fixModel`, `fixScope` (see below), `notes` |
+| **e2e** | e2e-tester, test it end to end | `stage.js` `{stage: "e2e", agent: "worker", skill: "e2e-tester", detailFile: "e2e-report.md"}` | spec/plan paths, how to reach the running stack | `model`, `notes` |
 | **done-check** | is it done, (end of execute) | workflow `terminal-gate.js` | `planDir` | `pr` |
 
 Rules:
-- `fact-checker -> fix` directly after **planner** or inside a **review** loop is already part of that workflow: do not add separate stages.
+- `fact-checker -> fix` directly after **planner** or inside a **review** loop is already part of that workflow: do not add separate stages. Words attached to those segments still apply to the workflow: "fact-checker deep" → `factcheckModel`, "fix only trivial" → `fixScope`.
+- **Models.** A tier word (frontier, deep, standard, fast) or a model name attached to a segment sets that role's model override as `provider/id:thinking` from the Model Tiers table in AGENTS.md (e.g. frontier → `anthropic/claude-fable-5-1:high`). A tier word attached to **plan/execute** as "the steps' size" is `tier`; if you cannot tell which is meant, that is ambiguous.
+- **`fixScope`** (review): `clear` (default: fix findings with one obviously right fix, escalate judgement calls to the user), `trivial` (only typos, stale paths, doc drift, one-liners; nits included; everything else escalated), `all` (fix every confirmed finding), `none` (report only, "no fix"). Escalated findings come back as `decision` actionables and stop the loop.
+- **`notes`**: free text for intent no override expresses ("focus on the auth paths", "be harsh on tests"). It is appended to every child task of that stage. Prefer a real override when one fits.
 - `(A -> B) xN early stop K`: the review workflow stops at its first clean round; for K > 1, run it again until K consecutive runs are clean or N is spent.
-- A segment the table does not cover becomes a `stage.js` run with the closest agent (`worker` writes code, `delegate` general, `wf-fact-checker` verifies). `scout` is only a helper (no envelope): small models reject the schema.
+- A segment the table does not cover becomes a `stage: "custom"` entry in `chain.json`, run through `stage.js` with the closest agent (`worker` writes code, `delegate` general, `wf-fact-checker` verifies). `scout` is only a helper (no envelope): small models reject the schema.
 - Arguments you cannot infer (spec path, plan dir, base ref) come from the user's text, the previous stages' artifacts, or the repo (`git merge-base`, existing `plans/`). Ask only if genuinely ambiguous.
 
 ---
 
 ## Compiling and Listing
 
-Print the compiled run before starting, one line, stages in order with their resolved overrides and any pause marker:
+1. **Read** the prose as intent. Split it into segments and the words attached to each (inside `stage(...)`, right after a stage name, or anywhere in the sentence).
+2. **Map every meaningful word or phrase** to one entry in `chain.json` `mapping`: `{from, to, confidence, reason?}`. `from` is a verbatim slice of the prose (a phrase may cover several words). `to` is `stage:<name>`, `<stage>.<arg>=<value>` (must appear in that stage's args), `pause:<where>`, `input:<name>=<value>`, or free text. `confidence`:
+   - `exact`: the words name the stage, override or value directly ("x2", "no x-check", "with gpt", "report after planner").
+   - `inferred`: a fuzzy reading you are confident about ("the big model" → frontier, "just fix the obvious stuff" → `fixScope=trivial`, "revew" → review). It runs without asking.
+   - `ambiguous`: two or more plausible readings that would change what runs, or no plausible reading. Add a question with numbered options; launch nothing.
+   - `ignored`: no effect on the run, with a reason ("activation phrase", "context already passed as a path"). Never use `ignored` for intent you could not place: that is `ambiguous`, or `notes`.
+   Unknowable required inputs (which repo, which base ref, which plan) are also questions; inputs you can find (repo convention, `git merge-base`, earlier artifacts) are `inferred`.
+3. **Write `chain.json`** (`{prose, stages, mapping, questions, status: "ready"|"ask", dir}`) and run `bash <skills>/scripts/validate-chain.sh <dir>/chain.json`. It fails on any meaningful word no `from` covers, unknown stages or args, a structured `to` missing from its stage, or ambiguous readings without questions. Fix the mapping and re-run until `ok`. It checks bookkeeping, not judgement: be honest with the confidences.
+4. **Print** the run line. Mark inferred values with `~`, list ignored phrases, and put questions after it:
 
 ```
-Run: investigate(scouts=3) → spec → fact-check-doc → fix → plan(angles=3, tier=deep) ⏸ → execute(waves) → review(x3, +gpt, x-check) → e2e
-Dir: plans/token-refresh/runs/2026-10-05T1030/
+Run: review(x1, ~reviewerModel=fable:high, factcheckModel=opus:medium, ~fixScope=trivial)
+Ignored: "you are now the skill:coordinator" (activation)
+Dir: plans/x/runs/2026-10-05T1030/
 ```
 
-`⏸` marks a pause the user asked for. If you had to guess an argument, show the guess in the line (`plan(spec=plans/x/SPEC.md?)`).
+```
+Run: plan(angles=3) → execute(waves) → review(x2)
+? "deep" — 1) plan steps sized for the deep worker tier (tier=deep)  2) planners on the deep model (plannerModel=opus)
+```
+
+`⏸` marks a pause the user asked for. With `status: "ask"`, stop after printing; on the answer, update `mapping` (the answer becomes `exact`), clear the question, re-validate, and go.
+
+**Compile only.** If the user says "compile only", "dry run" or "just show the plan", do steps 1–4 and stop: no stage launches.
 
 ---
 
@@ -97,7 +116,7 @@ Dir: plans/token-refresh/runs/2026-10-05T1030/
 
 - Always, even for a one-stage chain: every run gets a run directory, a `chain.json` and numbered stage directories. It is the resume point and the audit trail.
 - Location: when the chain works on an existing plan directory, `<planDir>/runs/<YYYY-MM-DDTHHMM>/`. Otherwise the repo's convention for development artifacts if it has one (AGENTS.md/CONTRIBUTING, an existing `plans/` or `.agent-plans/`), else `plans/<name>/runs/<YYYY-MM-DDTHHMM>/`. Keep it git-ignored unless the project checks such artifacts in (add it to `.git/info/exclude`, not `.gitignore`, when unsure).
-- `chain.json`: written by you once, before the first stage — `{prose, stages: [{n, stage, args, pause}], dir}`.
+- `chain.json`: written by you before the first stage — `{prose, stages: [{n, stage, args, pause}], mapping, questions, status, dir}` (Compiling). Use a run directory the user names, if any. Any stage you add later (an extra fix pass, a re-run) is appended to `stages` before it launches, so resume never loses it.
 - `NN-<stage>[-<suffix>]/`: one directory per stage, numbered in execution order (`03-execute-wave-0`, `04-execute-step-03`, `05-done-check`); `brief.json` (the envelope) plus that stage's details. Pass it as `stageDir`; never let a workflow fall back to its default directory.
 - Resume after `/new` or in a fresh session: read `chain.json` and the highest-numbered `brief.json`, then continue from the next stage. Do not reconstruct state from memory.
 

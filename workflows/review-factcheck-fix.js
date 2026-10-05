@@ -1,6 +1,9 @@
 // args: { target: "diff/PR description, e.g. 'git diff main...HEAD in /abs/repo' or 'PR #67'", reviewDir: "/abs/plans/x/review",
 //         baseRef?: "<sha before the change>" (pins the review range across fix rounds), repo?: "/abs/repo", angles?: string[] | number, diversityModel?: "openai/gpt-6-sol",
-//         crossExam?: boolean (default true), maxRounds?: 2, stageDir?: "/abs/run/NN-review" (default: reviewDir) }
+//         crossExam?: boolean (default true), maxRounds?: 2, stageDir?: "/abs/run/NN-review" (default: reviewDir),
+//         reviewerModel?/factcheckModel?/fixModel?: "<provider/id[:thinking]>", fixScope?: "clear"|"trivial"|"all"|"none" (default "clear"),
+//         notes?: "<user intent with no dedicated arg; appended to every child task>" }
+// Unknown args return a blocked envelope: a misspelled or invented arg must not be dropped silently.
 // Returns the stage envelope; full result in <stageDir>/result.json.
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Models are NOT named here except the opt-in diversityModel lane; modelScope rejects any value not
@@ -10,6 +13,22 @@
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 const SKILLS = "${PI_WORKFLOW_SKILLS_DIR:-/home/ignacio/pr/pi-workflow-skills}";
+const ALLOWED_ARGS = ["target", "reviewDir", "baseRef", "repo", "angles", "diversityModel", "crossExam", "maxRounds", "stageDir",
+  "reviewerModel", "factcheckModel", "fixModel", "fixScope", "notes"];
+const FIX_SCOPES = ["clear", "trivial", "all", "none"];
+const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
+const badScope = args.fixScope !== undefined && !FIX_SCOPES.includes(args.fixScope);
+if (badArgs.length || badScope || !args.reviewDir) {
+  const why = badArgs.length ? "unknown args: " + badArgs.join(", ") + " (allowed: " + ALLOWED_ARGS.join(", ") + ")"
+    : badScope ? "fixScope must be one of " + FIX_SCOPES.join("|") : "reviewDir is required";
+  const env = { stage: "review", status: "blocked", summary: why.slice(0, 400), actionables: [{ what: why.slice(0, 300), kind: "fix", ref: "workflows/review-factcheck-fix.js" }], artifacts: { primary: "workflows/review-factcheck-fix.js" } };
+  if (args.stageDir) await safe(runs.run("persist-args", { agent: "wf-host-command", label: "Persist review arg error",
+    task: JSON.stringify({ script: "write-artifact", path: args.stageDir + "/brief.json", json: env }) }));
+  return env;
+}
+const fixScope = args.fixScope ?? "clear";
+const notesLine = args.notes ? "User notes for this stage: " + args.notes : "";
+const pick = (m) => (m ? { model: m } : {});
 
 const DEFAULT_ANGLES = ["correctness", "security-and-failure-modes", "tests-and-gate-coverage"];
 const angles = Array.isArray(args.angles)
@@ -27,6 +46,15 @@ const REVIEW_CLASS_SCHEMA = {
 const FC_CLASS_SCHEMA = {
   type: "object", additionalProperties: true, required: ["refuted", "partial", "disputed"],
   properties: { refuted: { type: "integer" }, partial: { type: "integer" }, disputed: { type: "integer" }, unverifiable: { type: "integer" }, total: { type: "integer" }, error: { type: "string" } }
+};
+
+const FIX_REPORT = {
+  type: "object", additionalProperties: true, required: ["fixed", "escalated", "skipped"],
+  properties: {
+    fixed: { type: "array", items: { type: "string" } },
+    escalated: { type: "array", items: { type: "object", required: ["title", "why"], properties: { title: { type: "string" }, why: { type: "string" } } } },
+    skipped: { type: "array", items: { type: "object", required: ["title", "why"], properties: { title: { type: "string" }, why: { type: "string" } } } }
+  }
 };
 
 let result = null;
@@ -47,8 +75,8 @@ for (let round = 0; round < maxRounds; round += 1) {
         agent: "wf-code-reviewer",
         label: "Review r" + round + " " + angle,
         task: ["mode: \"angle\"", "Angle: " + angle, "Target: " + args.target, repoLine, rangeLine, prior,
-               "Write your findings (markdown, every finding with file:line + evidence + severity P0/P1/P2) to your output path."].filter(Boolean).join("\n"),
-        output: dir + "/angle-" + i + ".md"
+               "Write your findings (markdown, every finding with file:line + evidence + severity P0/P1/P2) to your output path.", notesLine].filter(Boolean).join("\n"),
+        output: dir + "/angle-" + i + ".md", ...pick(args.reviewerModel)
       };
       if (args.diversityModel && i === angles.length - 1) item.model = args.diversityModel;
       return item;
@@ -62,9 +90,9 @@ for (let round = 0; round < maxRounds; round += 1) {
     const retries = await runs.all(failedIdx.map((i) => ({
       key: "r" + round + "-angle-" + i + "-retry", agent: "wf-code-reviewer", label: "Review r" + round + " " + angles[i] + " (retry)",
       task: ["mode: \"angle\"", "Angle: " + angles[i], "Target: " + args.target, repoLine, rangeLine, prior,
-             "Write your findings (markdown, every finding with file:line + evidence + severity P0/P1/P2) to your output path."].filter(Boolean).join("\n"),
+             "Write your findings (markdown, every finding with file:line + evidence + severity P0/P1/P2) to your output path.", notesLine].filter(Boolean).join("\n"),
       output: dir + "/angle-" + i + "-retry.md",
-      ...(args.diversityModel && i === angles.length - 1 ? { model: args.diversityModel } : {})
+      ...(args.diversityModel && i === angles.length - 1 ? { model: args.diversityModel } : pick(args.reviewerModel))
     })));
     // Results may be frozen; rebuild instead of mutating.
     const retryByIdx = {};
@@ -101,11 +129,11 @@ for (let round = 0; round < maxRounds; round += 1) {
   // 3. Synthesis under the classify-review typed gate. Fresh launch (typed gates are rejected on resume).
   const synthPath = dir + "/synthesis.json";
   const synth = await safe(runs.run("r" + round + "-synth", {
-    agent: "wf-code-reviewer", label: "Review synthesis r" + round, output: synthPath,
+    agent: "wf-code-reviewer", label: "Review synthesis r" + round, output: synthPath, ...pick(args.reviewerModel),
     task: ["mode: \"synthesis\"", "Target: " + args.target, repoLine, rangeLine,
            "Angle findings files: " + anglePaths.join(", "),
            xexamPaths.length ? "Cross-exam files: " + xexamPaths.join(", ") : "",
-           "Write JSON to your output path, exactly: {\"blockers\":[{\"title\",\"file\",\"line\",\"evidence\",\"fix\"}],\"important\":[...same shape],\"refuted\":[{\"title\",\"reason\"}]}. blockers = P0 (must fix before merge); important = P1 only; P2/nits/hygiene go in an optional \"nits\" array, never in important (the loop stops when blockers and important are both empty); refuted = angle findings you rejected with evidence."].filter(Boolean).join("\n"),
+           "Write JSON to your output path, exactly: {\"blockers\":[{\"title\",\"file\",\"line\",\"evidence\",\"fix\"}],\"important\":[...same shape],\"refuted\":[{\"title\",\"reason\"}]}. blockers = P0 (must fix before merge); important = P1 only; P2/nits/hygiene go in an optional \"nits\" array, never in important (the loop stops when blockers and important are both empty); refuted = angle findings you rejected with evidence.", notesLine].filter(Boolean).join("\n"),
     gate: {
       command: SKILLS + "/scripts/classify-review.sh '" + synthPath + "'",
       output: "json", schema: REVIEW_CLASS_SCHEMA, timeoutMs: 60000
@@ -126,9 +154,9 @@ for (let round = 0; round < maxRounds; round += 1) {
   // 4. Fact-check the synthesis so the fix pass only acts on verified findings.
   const fcPath = dir + "/factcheck.json";
   const fc = await safe(runs.run("r" + round + "-factcheck", {
-    agent: "wf-fact-checker", label: "Fact-check review r" + round, output: fcPath,
+    agent: "wf-fact-checker", label: "Fact-check review r" + round, output: fcPath, ...pick(args.factcheckModel),
     task: "Fact-check the review synthesis at " + synthPath + " (target: " + args.target + (args.repo ? ", repo " + args.repo : "") +
-          "). One claim per blocker/important finding: is the defect real at the cited file:line? Write {claims:[{claim, verdict, evidence}]} to your output path.",
+          "). One claim per blocker/important finding: is the defect real at the cited file:line? Write {claims:[{claim, verdict, evidence}]} to your output path." + (notesLine ? "\n" + notesLine : ""),
     gate: {
       command: SKILLS + "/scripts/classify-factcheck.sh '" + fcPath + "'",
       output: "json", schema: FC_CLASS_SCHEMA, timeoutMs: 60000
@@ -142,17 +170,33 @@ for (let round = 0; round < maxRounds; round += 1) {
     final = { state: "FAIL", stage: "factcheck", round, error: fcClass?.error ?? fc.error ?? "empty fact-check report" };
     break;
   }
-  // 5. Fix pass: builtin worker applies only findings the fact-check did not refute.
+  // 5. Fix pass, bounded by fixScope. Findings outside the scope are escalated to the user, never dropped: the old
+  //    coordinator rule "fix the unambiguous, raise judgement calls" lives here now that the fix is built in.
+  if (fixScope === "none") {
+    final = { state: "REPORTED", round, reason: "fixScope none: confirmed findings left for the user" };
+    break;
+  }
+  const SCOPE_TEXT = {
+    all: "Fix every blocker and important finding in " + synthPath + ".",
+    clear: "Fix a blocker/important finding in " + synthPath + " only if its fix is unambiguous: one obviously right change, no design choice, no behaviour or contract change beyond the defect. Escalate (do not fix) any finding that needs a judgement call: competing fixes, API/behaviour change, scope beyond the finding, or you disagree with it.",
+    trivial: "Fix only trivial items in " + synthPath + " (blockers, important and nits alike): typos, stale paths/names, doc or comment drift, one-line mechanical corrections with no behaviour change. Escalate every other blocker/important finding; leave other nits alone."
+  };
   const fix = await safe(runs.run("r" + round + "-fix", {
-    agent: "worker", skill: "step-contract", label: "Fix review findings r" + round,
-    task: ["Target: " + args.target, repoLine, rangeLine,
-           "Apply fixes for every blocker and important finding in " + synthPath + ".",
+    agent: "worker", skill: "step-contract", label: "Fix review findings r" + round + " (" + fixScope + ")", ...pick(args.fixModel),
+    task: ["Target: " + args.target, repoLine, rangeLine, SCOPE_TEXT[fixScope],
            "Skip any finding the fact-check at " + fcPath + " marks REFUTED; for DISPUTED/UNVERIFIABLE ones, fix only if you can confirm the defect yourself.",
-           "Re-run the repo's relevant tests/lint after fixing and commit with an imperative message. Report what you fixed and skipped."].filter(Boolean).join("\n")
+           "Re-run the repo's relevant tests/lint after fixing and, if you changed anything, commit with an imperative message.",
+           "Return fixed (titles), escalated ({title, why}: needs the user) and skipped ({title, why}: refuted/unconfirmed/out of scope nits).", notesLine].filter(Boolean).join("\n"),
+    outputSchema: FIX_REPORT
   }));
-  record.fix = { ok: fix.ok, runId: fix.runId, error: fix.error };
-  if (!fix.ok) {
-    final = { state: "FAIL", round, stage: "fix", error: fix.error };
+  const fixReport = fix.structuredOutput;
+  record.fix = { ok: fix.ok, runId: fix.runId, error: fix.error, report: fixReport ?? null };
+  if (!fix.ok || !fixReport) {
+    final = { state: "FAIL", round, stage: "fix", error: fix.error ?? "fix worker returned no fix report" };
+    break;
+  }
+  if (fixReport.escalated.length) {
+    final = { state: "NEEDS_DECISION", round, reason: fixReport.escalated.length + " finding(s) escalated by fixScope " + fixScope };
     break;
   }
   // `fix` belongs to every round of "(review -> fact-check -> fix) xN", the last one included. Fixes made in the last
@@ -164,8 +208,10 @@ for (let round = 0; round < maxRounds; round += 1) {
 }
 
 const last = rounds[rounds.length - 1];
-const pendingDecisions = last && last.fcClass && last.fcClass.disputed > 0
-  ? ["disputed review claims - see " + last.fcPath] : [];
+const pendingDecisions = [];
+if (last && last.fcClass && last.fcClass.disputed > 0) pendingDecisions.push("disputed review claims - see " + last.fcPath);
+for (const e of last?.fix?.report?.escalated ?? []) pendingDecisions.push("escalated: " + e.title + " - " + e.why);
+if (final && final.state === "REPORTED") pendingDecisions.push("unfixed (fixScope none): " + last.reviewClass.blockers + " blocker(s), " + last.reviewClass.important + " important - see " + last.synthPath);
 
 result = { ...final, rounds, pendingDecisions };
 }
@@ -174,13 +220,13 @@ result = { ...final, rounds, pendingDecisions };
 const stageDir = args.stageDir ?? args.reviewDir;
 const lastR = result.rounds?.[result.rounds.length - 1];
 const actionables = [];
-for (const p of result.pendingDecisions ?? []) actionables.push({ what: p, kind: "decision", ref: lastR?.fcPath ?? stageDir });
+for (const p of result.pendingDecisions ?? []) actionables.push({ what: String(p).slice(0, 300), kind: "decision", ref: lastR?.fcPath ?? stageDir });
 if (result.state === "FIXED_UNREVIEWED") actionables.push({ what: "last round's fixes were not re-reviewed; add a round to verify them", kind: "info", ref: lastR?.synthPath ?? stageDir });
-else if (result.state !== "PASS") actionables.push({ what: (result.stage ?? "review") + ": " + (result.reason ?? result.error ?? (result.failedAngles ? result.failedAngles.length + " angle(s) failed" : "see result.json")), kind: "fix", ref: lastR?.synthPath ?? stageDir + "/result.json" });
+else if (!["PASS", "NEEDS_DECISION", "REPORTED"].includes(result.state)) actionables.push({ what: (result.stage ?? "review") + ": " + (result.reason ?? result.error ?? (result.failedAngles ? result.failedAngles.length + " angle(s) failed" : "see result.json")), kind: "fix", ref: lastR?.synthPath ?? stageDir + "/result.json" });
 const rc = lastR?.reviewClass;
 const summary = "review " + result.state + " after " + (result.rounds?.length ?? 0) + " round(s)" + (rc ? "; last synthesis: " + rc.blockers + " blockers, " + rc.important + " important" : "") + ".";
-const status = result.state === "PASS" || result.state === "FIXED_UNREVIEWED" ? ((result.pendingDecisions ?? []).length ? "needs-decision" : "done") : result.state === "BLOCKED" ? "blocked" : "failed";
-const envelope = { stage: "review", status, summary, actionables, artifacts: { primary: lastR?.synthPath ?? stageDir + "/result.json", details: [stageDir + "/result.json"] } };
+const status = ["PASS", "FIXED_UNREVIEWED", "NEEDS_DECISION", "REPORTED"].includes(result.state) ? ((result.pendingDecisions ?? []).length ? "needs-decision" : "done") : result.state === "BLOCKED" ? "blocked" : "failed";
+const envelope = { stage: "review", status, summary, actionables: actionables.slice(0, 12), artifacts: { primary: lastR?.synthPath ?? stageDir + "/result.json", details: [stageDir + "/result.json"] } };
 await safe(runs.run("persist", { agent: "wf-host-command", label: "Persist review result",
   task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) }));
 return envelope;
