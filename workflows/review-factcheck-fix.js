@@ -139,11 +139,6 @@ for (let round = 0; round < maxRounds; round += 1) {
     final = { state: "FAIL", stage: "factcheck", round, error: fcClass?.error ?? fc.error ?? "empty fact-check report" };
     break;
   }
-  if (round === maxRounds - 1) {
-    final = { state: "FAIL", round, reason: "findings remain after maxRounds" };
-    break;
-  }
-
   // 5. Fix pass: builtin worker applies only findings the fact-check did not refute.
   const fix = await runs.run("r" + round + "-fix", {
     agent: "worker", skill: "step-contract", label: "Fix review findings r" + round,
@@ -155,6 +150,12 @@ for (let round = 0; round < maxRounds; round += 1) {
   record.fix = { ok: fix.ok, runId: fix.runId, error: fix.error };
   if (!fix.ok) {
     final = { state: "FAIL", round, stage: "fix", error: fix.error };
+    break;
+  }
+  // `fix` belongs to every round of "(review -> fact-check -> fix) xN", the last one included. Fixes made in the last
+  // round have had no review of their own, so the result says so rather than claiming a clean PASS.
+  if (round === maxRounds - 1) {
+    final = { state: "FIXED_UNREVIEWED", round, reason: "round " + round + " fixes were applied but not re-reviewed (maxRounds reached)" };
     break;
   }
 }
@@ -171,10 +172,11 @@ const stageDir = args.stageDir ?? args.reviewDir;
 const lastR = result.rounds?.[result.rounds.length - 1];
 const actionables = [];
 for (const p of result.pendingDecisions ?? []) actionables.push({ what: p, kind: "decision", ref: lastR?.fcPath ?? stageDir });
-if (result.state !== "PASS") actionables.push({ what: (result.stage ?? "review") + ": " + (result.reason ?? result.error ?? (result.failedAngles ? result.failedAngles.length + " angle(s) failed" : "see result.json")), kind: "fix", ref: lastR?.synthPath ?? stageDir + "/result.json" });
+if (result.state === "FIXED_UNREVIEWED") actionables.push({ what: "last round's fixes were not re-reviewed; add a round to verify them", kind: "info", ref: lastR?.synthPath ?? stageDir });
+else if (result.state !== "PASS") actionables.push({ what: (result.stage ?? "review") + ": " + (result.reason ?? result.error ?? (result.failedAngles ? result.failedAngles.length + " angle(s) failed" : "see result.json")), kind: "fix", ref: lastR?.synthPath ?? stageDir + "/result.json" });
 const rc = lastR?.reviewClass;
 const summary = "review " + result.state + " after " + (result.rounds?.length ?? 0) + " round(s)" + (rc ? "; last synthesis: " + rc.blockers + " blockers, " + rc.important + " important" : "") + ".";
-const status = result.state === "PASS" ? ((result.pendingDecisions ?? []).length ? "needs-decision" : "done") : result.state === "BLOCKED" ? "blocked" : "failed";
+const status = result.state === "PASS" || result.state === "FIXED_UNREVIEWED" ? ((result.pendingDecisions ?? []).length ? "needs-decision" : "done") : result.state === "BLOCKED" ? "blocked" : "failed";
 const envelope = { stage: "review", status, summary, actionables, artifacts: { primary: lastR?.synthPath ?? stageDir + "/result.json", details: [stageDir + "/result.json"] } };
 await runs.run("persist", { agent: "wf-host-command", label: "Persist review result",
   task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) });

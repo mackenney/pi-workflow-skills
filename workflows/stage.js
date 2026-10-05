@@ -4,7 +4,7 @@
 //         skill?: "specifier", detailFile?: "spec.md" | "/abs/path", model?: "<provider/id>", helpers?: [ {agent, task, file, skill?}, ... ] }
 // helpers: optional parallel read-only children (e.g. investigation scouts) that write markdown to <stageDir>/<file>;
 //          no schema on them (small models reject it); the main child receives their paths.
-// Returns the envelope; <stageDir>/brief.json holds it. A child that fails or returns an invalid envelope is retried once
+// Returns the envelope; <stageDir>/brief.json holds it (written by this script, not by the child). A child that fails or returns an invalid envelope is retried once
 // on `delegate`; if that also fails, this script writes a `blocked` envelope itself.
 const ENVELOPE = {
   type: "object", additionalProperties: false,
@@ -46,8 +46,11 @@ const task = [args.task, helperPaths.length ? "Helper findings to merge: " + hel
 const CHECK_TASK = JSON.stringify({ script: "write-artifact", check: [detail] });
 const missingFrom = (chk) => { try { return (JSON.parse(chk.output).missing ?? []).length > 0; } catch (e) { return true; } };
 const schemaOk = (r) => r && r.ok && r.structuredOutput && ENVELOPE.properties.status.enum.includes(r.structuredOutput.status);
+// No `output` binding on the stage child: the runtime tells a child to write its report to its output path, so a bound
+// brief.json received the detail report instead of the envelope (observed 2026-10-05 with wf-fact-checker).
+// brief.json is written from structuredOutput by the persist step below.
 let run = await runs.run("main", {
-  agent: args.agent, label: args.stage, task, output: brief, outputSchema: ENVELOPE,
+  agent: args.agent, label: args.stage, task, outputSchema: ENVELOPE,
   ...(args.skill ? { skill: args.skill } : {}), ...(args.model ? { model: args.model } : {})
 });
 const chkMain = await runs.run("check-main", { agent: "wf-host-command", label: "Check " + args.stage + " detail file", task: CHECK_TASK });
@@ -57,7 +60,7 @@ if (!ok && args.agent !== "delegate") {
   fallback = { agent: args.agent, error: run.error ?? (schemaOk(run) ? "detail file " + detail + " not written" : "no valid envelope") };
   // Own output path: the runtime rejects two children resolving output to the same file.
   run = await runs.run("main-retry", {
-    agent: "delegate", label: args.stage + " (retry on delegate)", task, output: args.stageDir + "/brief.retry.json", outputSchema: ENVELOPE,
+    agent: "delegate", label: args.stage + " (retry on delegate)", task, outputSchema: ENVELOPE,
     ...(args.skill ? { skill: args.skill } : {})
   });
   const chkRetry = await runs.run("check-retry", { agent: "wf-host-command", label: "Check " + args.stage + " detail file (retry)", task: CHECK_TASK });
