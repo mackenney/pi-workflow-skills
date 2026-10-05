@@ -17,8 +17,11 @@ These seven decisions are final for this revision. They are recorded here so nob
 3. **`PROGRESS.md` (or the plan directory's existing ledger file) is the authoritative ledger.** Mission `state` is an optional, best-effort mirror and receipt store. The parent session writes the ledger from the `ledger` object each workflow returns; the terminal gate reads the file, not mission state.
 4. **Deferred gates block by default.** A plan or step is not complete while any deferred gate row is `open`; the only exits are discharging the gate (`discharged <commit>`) or a human-recorded `waived by …` row. No planner-time `blocking:` flag, no model-judged significance.
 5. **Fast tier = `openrouter/deepseek/deepseek-v4.1-flash`, re-verified routable on 2026-09-24** (`pi --model openrouter/deepseek/deepseek-v4.1-flash --print` returned `provider: openrouter, model: deepseek/deepseek-v4.1-flash`, no substitution, no provider `order` needed). This supersedes FACTCHECK R9's "unroutable"; routability is account-side and can regress, so the design must not hard-fail if it does (§3.2.1 `--override-tier`). DeepSeek **as implementer** remains an explicit, measured, opt-in trial lane: `wf-flash-worker` ships `disabled: true` (RECOMMENDATIONS-v2 R9).
-6. **Cross-vendor (GPT) reviewer is an explicit opt-in lane**, not deleted, not default: `review-factcheck-fix.js` takes `args.diversityModel`; `modelScope.agents["wf-code-reviewer"].allow` is the only place `openai/gpt-6-sol` is permitted. Default competitive review runs one model (fc:E7).
+6. **Cross-vendor (GPT) reviewer is an explicit opt-in lane**, not deleted, not default: `review-factcheck-fix.js` takes `args.diversityModel`; the global `modelScope.allow` list bounds which models any per-run override may name (2026-10-02: per-agent allow-lists removed so models stay overridable per run; `strict: false`). Default competitive review runs one model (fc:E7).
 7. **Portability scope is pi-only.** No sync command, renderer or drift-warning extension writes to `~/.claude/agents` or `~/.codex/agents`. `PORTABILITY.md` explains, once, what ports as prose and what does not (fc:D1–D3, E2).
+8. **The user's prose chain is the only interface** (2026-10-02). The user writes `foo -> bar -> baz` plus "you are now the skill:coordinator"; the coordinator compiles it into stages from a table in its own skill, prints one line per stage, and runs them (§3.10). Human-facing prompt templates are removed; nothing needs remembering beyond the chain.
+9. **One result envelope for every stage** (2026-10-02): `{stage, status, summary, actionables[], artifacts}`, schema-enforced; the parent reads only envelopes and opens artifacts on demand, keeping its context small (target below ~20% of the window).
+10. **Ledger rows are written by a host script from the typed verdict**, not by the parent model (2026-10-02; reverses Q5's "parent writes"). The intent of Q5 — no model writes the ledger from judgement — holds more strictly.
 
 Also applied from the fact-check: deep tier = `anthropic/claude-opus-5-5` (canonical; `fc-deep`'s `opus-5` pin retires, and the retro's Phase B / GYM-891 baseline was measured on `opus-5`, so the metrics plan notes the baseline break — fc:A5, E7); fast tier = `deepseek-v4.1-flash` (canonical; supersedes the older `deepseek-v4-flash` still listed in `enabledModels`); typed `gate` and `outputSchema` are mutually exclusive on one child (fc:C9, E8); the new-agent list shrinks to 7 model-backed agents + 1 command runner (fc:E3, §3.3); deep-tier default executor is a **trial default** (fc:E7).
 
@@ -675,29 +678,11 @@ Notes on what is confirmed vs assumed in this skeleton:
 | Living ledger | **PROGRESS.md (or the plan dir's ledger file) is authoritative**; sections and row grammar in `step-contract`; written by the parent from each returned `ledger` object; mission `state.ledger.<step>` and PR/CI receipts are a best-effort mirror | PROGRESS.md: prose format enforced by `terminal-gate.sh` parsing; mission: **[doc]** |
 | **Plan not complete while deferred gates open** | `terminal-gate.sh` parses "Tech debt / deferred gates", "Disabled/softened checks" and the `## Steps` checklist; any row whose status is not `discharged <commit>` or `waived by <human> <YYYY-MM-DD>: <reason>`, any unchecked step, or any missing section → `ok: false`, listed. A waiver is a row the human writes (or the parent writes verbatim at the human's explicit instruction, quoting it). No model classifies significance; no `blocking:` flag exists. | script (fail-closed regex); the executor skill forbids reporting completion without `ok: true` |
 | Tier never hardcoded in skills or scripts | skills and scripts name agents; the generator binds agents to models; `modelScope` warns/rejects stray per-run models | **[doc]** + generator |
-| Second-vendor reviewer only on request | `args.diversityModel` + `modelScope.agents["wf-code-reviewer"].allow` | **[doc]** (`modelScope` rejects per-run overrides out of scope) |
+| Second-vendor reviewer only on request | `args.diversityModel`, bounded by the global `modelScope.allow` | **[doc]** (`modelScope` rejects explicit per-run models outside the global list) |
 
-### 3.7 Prompt templates as entry points
+### 3.7 Entry point: the prose chain (prompt templates removed)
 
-Two kinds, because of the discovery split confirmed in source:
-
-1. **Plain pi templates** shipped in `pi-workflow-skills/prompts/` (discovered by pi from packages **[doc]** `pi:packages.md`): they expand text into the parent's turn and *tell the parent which skill and workflow file to use*. Example `prompts/plan.md`:
-
-   ```markdown
-   ---
-   description: Plan from a spec/investigation via plan-factcheck-fix.js (multi-angle or simple)
-   argument-hint: "<spec-or-findings-path> <plan-dir> [angles|simple]"
-   ---
-   `<skills>` is `$PI_WORKFLOW_SKILLS_DIR` when set (check with `printenv PI_WORKFLOW_SKILLS_DIR`), else `/home/ignacio/pr/pi-workflow-skills`. Load the `planner` and `step-contract` skills. Then run `<skills>/workflows/plan-factcheck-fix.js` via `subagent({ workflow: "<that path>", args, async: true })`:
-   - `spec`: absolute path of `$1`
-   - `planDir`: absolute path of `$2`
-   - `${3:-3}` = `simple` → `mode: "simple"`; a number → `angles: <number>`
-
-   When it returns, write any `pendingDecisions` into PROGRESS.md "Pending decisions (human)" and report `state`, `planPath`, `factcheckClass`.
-   ```
-   Similar: `/execute-step <plan-dir> <step-file> [pr]`, `/execute-wave <plan-dir> <step-file>...`, `/review-wf [rounds] [diversityModel]`, `/terminal-gate <plan> [pr]`, `/investigate <topic>`.
-
-2. **`/prompt-workflow` templates** in `~/.pi/agent/prompts/` (pi-subagents reads only its own, user and project prompt dirs **[src]** `prompt-resources.js`): for one-child shortcuts such as `/prompt-workflow fact-check <path>` → `subagent: wf-fact-checker`, `fresh: true`. Their `chain:` form is linear with `{previous}` only, no gates — not suitable for the pipelines.
+The user drives the system in prose (decision 8). Pi prompt templates expand only when a message *starts* with `/name`, with the rest of the message as its arguments (`expandPromptTemplate`, `pi:core/prompt-templates.ts`), so several commands cannot share one message, and positional arguments proved fragile (`${3:-3}` expanded into text the driver misread, 2026-10-02). Subagents cannot use pi templates at all. The `prompts/` directory and `~/.pi/agent/prompts/fact-check.md` were therefore deleted; the only entry point is the coordinator skill (§3.10). `/prompt-workflow` remains a pi-subagents feature but nothing here depends on it.
 
 ### 3.8 Guarantees vs assumptions (consolidated)
 
@@ -725,6 +710,40 @@ Two kinds, because of the discovery split confirmed in source:
 ### 3.9 Portability (pointer only)
 
 This design is pi-subagents-specific by construction: typed gates, `acceptance.verify`, `outputSchema`, scripted workflows, the supervisor channel, `modelScope` and missions have no equivalent in Claude Code or Codex (fc:D1–D3). Nothing in this package renders, syncs or checks agent files for those harnesses, and no code here writes under `~/.claude` or `~/.codex` (decision 7). `PORTABILITY.md` explains which parts of the pipeline are portable prose (role bodies, `step-contract` vocabulary, SKILL.md content) and which are not, with a short porting recipe. The existing `claude-install.sh` (skills-only symlinks) is unchanged and out of scope here.
+
+### 3.10 Chain compilation and the stage contract
+
+**Compile.** The coordinator reads the user's chain as intent and maps each segment to a stage from the stage table in `skills/coordinator/SKILL.md`. It prints the compiled run, one line per stage with its overrides — e.g. `plan(angles=3, tier=standard) → execute(waves) → review(x3, +gpt) → e2e` — so the user can follow and interrupt, then starts at once. Pauses happen only where the user asked ("report after plan") or when a stage returns `needs-decision`; otherwise the parent continues through the chain.
+
+**Stage table** (lives in the coordinator skill; one source for compile, docs and tests):
+
+| Stage (aliases) | Mechanism | Inputs (paths + allowed overrides) | Primary artifact |
+|---|---|---|---|
+| investigate (investigator) | single-agent stage, `wf-*`/builtin per tier, `investigator` skill | topic text; scope paths | findings report |
+| spec (specifier) | single-agent stage, `wf-synthesizer` spec mode, `specifier` skill | findings path | spec file |
+| fact-check-doc (fact-checker on a document) | single-agent stage, `wf-fact-checker` | document path | `factcheck.json` |
+| plan (planner → fact-checker → fix) | `plan-factcheck-fix.js` | spec path, plan dir; `angles`, `mode: simple`, `tier` | `plan.json` |
+| execute (executor) | `execute-step.js` / `execute-wave.js` per wave, then `terminal-gate.js` | plan dir; `tier`, `pr` | `PROGRESS.md` |
+| review (code-reviewer → fact-checker → fix, xN) | `review-factcheck-fix.js` | repo, base ref; `maxRounds`, `crossExam`, `diversityModel` | round syntheses |
+| e2e (e2e-tester) | single-agent stage, `e2e-tester` skill | spec/plan path, running stack | e2e report |
+| done-check | `terminal-gate.js` | plan dir; `pr` | gate JSON |
+
+A *single-agent stage* is one child launch with a task template from the table, `outputSchema` = the envelope, and `output` in the stage directory. Segments the table does not cover are dispatched as before, but still return the envelope.
+
+**Envelope** (every stage, workflow or single agent):
+
+```json
+{ "stage": "plan", "status": "done | needs-decision | failed | blocked",
+  "summary": "≤3 lines",
+  "actionables": [ { "what": "…", "kind": "decision | fix | info", "ref": "<path>#<anchor>" } ],
+  "artifacts": { "primary": "/abs/…", "details": ["/abs/…"] } }
+```
+
+Children produce it through `outputSchema`; workflows build it as their return value and write full results to the stage directory. `needs-decision` is the only status that interrupts the user unprompted; `failed`/`blocked` carry a diagnosis and evidence paths. Inputs between stages are always paths from earlier `artifacts`, never pasted content.
+
+**Run directory.** The repo's own convention for development artifacts wins; otherwise `plans/<name>/runs/<timestamp>/`, git-ignored unless the project checks such artifacts in. It holds `chain.json` (the user's prose, the compiled stages, overrides, pause markers) and `NN-<stage>/brief.json` (the envelope) plus that stage's details. A fresh session resumes from `chain.json` and the latest brief, not from conversation history.
+
+**Ledger by script.** `execute-step.js` and `execute-wave.js` apply each typed verdict to `PROGRESS.md` through a host script (`ledger-apply`) using the `step-contract` grammar — deferred gates → `open` rows, decisions, step tick with commit — idempotently per step. Wave lanes are applied by the parent through the same script only after merge and integrated re-gate. The parent never edits ledger rows by hand; human waivers are still written only at the human's explicit instruction.
 
 ---
 
@@ -759,8 +778,12 @@ Each step: change → verify → commit (the repo) / back up (`settings.json` co
 | 8 | **CI + terminal gate**: `scripts/ci-gate.sh`, `scripts/terminal-gate.sh`, `stack-ci-gate.js`, `terminal-gate.js`; executor skill terminal-gate section. | against an existing open PR (e.g. #67) → JSON state matches `gh pr view --json statusCheckRollup`; `terminal-gate.js` on a plan with one `open` deferred row → `ok: false`; add a `waived by …` row → `ok: true` | remove |
 | 9 | Rewrite **`executor/SKILL.md`**; delete `worker-reviewer`; add `prompts/*.md` entry points; `~/.pi/agent/prompts/fact-check.md` for `/prompt-workflow`. | `/plan`, `/execute-step`, `/terminal-gate` appear in completion; `/prompt-workflow` lists `fact-check` | `git revert` |
 | 10 | **Cleanup**: delete `~/.pi/agent/agents/{fc-deep,rev-fable,rev-sol}.md`; `rm -rf ~/.pi/agent/git/github.com/nicobailon/pi-subagents`; replace `SUBAGENTS-CONFIG-README.md` with a two-line note ("npm:pi-subagents ≥0.71.0; historical pin removed <date>; see ORCHESTRATION-ENCODING.md") or move it to `~/.pi/agent/notes/`; trim `enabledModels` to `deepseek-v4.1-flash` only. | `/subagents-doctor` clean; `subagent({action:"list"})` shows no `fc-deep`/`rev-*`; generator dry-run exits 0 | restore from backup |
-| 11 | Flip **`modelScope.strict`** to `true` (the block has existed with `enforce:true, strict:false` since step 2). | no rejections in a normal session; generator dry-run still exits 0 | set `strict` back to `false` |
+| 11 | ~~Flip **`modelScope.strict`** to `true`~~ (done 2026-09-25, reverted 2026-10-02 together with the per-agent allow-lists: models must stay overridable per run) (the block has existed with `enforce:true, strict:false` since step 2). | no rejections in a normal session; generator dry-run still exits 0 | set `strict` back to `false` |
 | 12 | **R9 flash trial lane (opt-in)**: re-run the routability probe; `subagent({action:"enable", agent:"wf-flash-worker"})` (or delete `disabled` by hand — the generator will not re-add it); run one measured plan of atomic steps with `tier: "fast"`; log cost/defects per RECOMMENDATIONS §6. | cost/defect log; `metrics.jsonl` rows tagged `tier: fast` | `subagent({action:"disable", agent:"wf-flash-worker"})` |
+| 13 | **Fail-closed hardening** (final review 2026-10-02, items 1–13): classifiers reject off-schema input; CI `pending/none/unknown` never PASS; ci-gate allow-list classification bound to the PR head SHA; fix rounds keep `acceptance`; `validate-plan` re-run after plan fixes; stricter `validate-plan`/`terminal-gate` parsing; consistent tier handling | `tests/scripts.test.sh` cases per item; e2e suite | `git revert` |
+| 14 | **Ledger by script**: `scripts/ledger-apply.*`, called from `execute-step.js`/`execute-wave.js` (§3.10) | e2e: PROGRESS.md rows written without the parent editing them; idempotent re-apply | `git revert` |
+| 15 | **Envelope**: one schema; workflows return it and write details to the stage dir; single-agent stage | e2e: parent transcript contains only envelopes | `git revert` |
+| 16 | **Coordinator rewrite + delete `prompts/`** (stage table, compile listing, run dir, pauses, resume) | acceptance: the user's prose chains run verbatim in the isolated install; resume from `chain.json` in a fresh session; parent context below ~20% | `git revert` |
 
 Measurement hook (RECOMMENDATIONS §6): every `execute-step.js` return already carries commit, gates, deferred and CI; the parent appends one row per step to `plans/<name>/metrics.jsonl` (cost from `mission.show` usage), tagged with the tier and model actually used. Note the baseline break: retro evidence was on `opus-5`; structural-mode plans run on `opus-5-5`. Move `fc_cost.py` to `~/.pi/agent/scripts/` in step 0.
 
@@ -774,9 +797,9 @@ Measurement hook (RECOMMENDATIONS §6): every `execute-step.js` return already c
 |---|---|---|
 | Q1 Fast tier default | **`openrouter/deepseek/deepseek-v4.1-flash`, low** in the AGENTS.md table; only `wf-flash-worker` (implementer, disabled by default) is generator-managed on it — `scout` is hand-pinned to `claude-haiku-4-5` and stays off `builtin-tiers.json` (Q10, below). | Re-verified routable 2026-09-24 without provider `order`; the AGENTS.md row is the explicit opt-in for the *tier*; implementer use stays a measured trial (R9); scouting stays all-Anthropic per AGENTS.md's existing policy. Routability is account-side and can regress → `--override-tier` (now persistent), never a runtime hard-fail. |
 | Q2 Deep tier model | **`anthropic/claude-opus-5-5`, medium**; `opus-5` retired. | fc:A5; metrics re-baseline noted in §5. |
-| Q3 Competitive reviewer tier / GPT lane | `wf-code-reviewer` = deep for angles and synthesis; **GPT reviewer is an opt-in lane** via `args.diversityModel`, permitted only by `modelScope.agents["wf-code-reviewer"].allow`. Not deleted, not default. | fc:E7: one model by default for cost; keep the cross-vendor capability, since it is the point of "competitive". |
+| Q3 Competitive reviewer tier / GPT lane | `wf-code-reviewer` = deep for angles and synthesis; **GPT reviewer is an opt-in lane** via `args.diversityModel`, permitted by the global `modelScope.allow` (per-agent lists removed 2026-10-02) — was: `modelScope.agents["wf-code-reviewer"].allow`. Not deleted, not default. | fc:E7: one model by default for cost; keep the cross-vendor capability, since it is the point of "competitive". |
 | Q4 Agents in package vs `~/.pi/agent/agents` | **Package.** | Versioned with the skills; `eject` remains for local experiments. |
-| Q5 Ledger authority | **PROGRESS.md (or the plan dir's existing ledger file)**; mission `state` is a best-effort mirror. | Survives mission retention cleanup, reviewable in PRs, parseable by `terminal-gate.sh`. |
+| Q5 Ledger authority | **PROGRESS.md (or the plan dir's existing ledger file)**; mission `state` is a best-effort mirror. **Writer revised 2026-10-02**: rows are written by the `ledger-apply` host script from typed verdicts, not by the parent model (§3.10). | Survives mission retention cleanup, reviewable in PRs, parseable by `terminal-gate.sh`. |
 | Q6 Deferred gates | **Block by default**; only a human-written `waived by <name> <date>: <reason>` row unblocks. No `blocking:` flag, no model-judged significance, no oracle. | Planner-time significance prediction is the same classification error that produced the capability-registration escapes; a human waiver at close-out is stronger evidence (fc:E6). |
 | Q8 `worker`/`reviewer` builtin overrides | **Keep, bound via `builtin-tiers.json`**; `worker` is the standard-tier implementer (with per-run `step-contract`); `reviewer` stays for ad-hoc use only. | fc:E3: builtin `worker` fits; builtin `reviewer` cannot re-run gates. |
 | Q9 Executor default tier | **deep, as a trial default**; `args.tier ?? contract.tier ?? "deep"`. Re-evaluate after 3 structural-mode plans. | RECOMMENDATIONS-v2 R1 (n=2, confounded). |
@@ -801,7 +824,7 @@ Measurement hook (RECOMMENDATIONS §6): every `execute-step.js` return already c
 - R-h. `structured_output` size: acceptance report folded in with `report:"on"`; large `gates[]` plus report may hit provider tool-argument limits. Keep `note` fields short; logs go to files.
 - R-i. `agentContract` is one sentence in the docs; not used here.
 - R-j. `/prompt-workflow` `chain:` is linear and untyped; do not build the pipelines on it.
-- R-k. This design adds 8 agent files, 6 workflow files, ~7 scripts, 1 skill, 1 generator. The parent must know the mapping; the `coordinator` skill table and the `/…` prompts are the only thing preventing improvised `subagent(...)` calls from returning. `modelScope` catches model drift; the generator's dry-run catches binding drift; nothing catches agent-name drift except the unknown-agent launch error.
+- R-k. This design adds 8 agent files, 6 workflow files, ~7 scripts, 1 skill, 1 generator. The parent must know the mapping; the `coordinator` skill's stage table (§3.10) is the only thing preventing improvised `subagent(...)` calls from returning. `modelScope` catches model drift; the generator's dry-run catches binding drift; nothing catches agent-name drift except the unknown-agent launch error.
 - R-l. **Fast-tier routability regression.** pi-subagents has no cross-model fallback; if OpenRouter stops routing `deepseek-v4.1-flash` under the account's privacy setting, `wf-flash-worker` (already disabled by default) cannot be enabled until the user runs `--override-tier fast=… --apply` (now persists across runs, §3.2.1). `scout` is unaffected — it is hand-pinned to haiku, not on this tier. Mitigation: the routability probe is a listed verify step (§5 steps 2, 12) and a one-line `--print` command.
 - R-m. **Generator state file.** Drift detection depends on `~/.pi/agent/tier-overrides.state.json`; if it is deleted, the next run classifies every differing value as `drift` and refuses `--apply` (safe direction, but noisy). If `settings.json` is edited by another tool (`subagent({action:"disable"})`, a future pi-subagents version, a profile load) the generator only ever sees its own two keys per agent, so collateral damage is bounded to `model`/`thinking`.
 - R-n. **Merged `wf-synthesizer`.** One body serving spec mode and plan mode risks a diluted role prompt — the §2.3 failure in miniature. Mitigation: the mode-specific knowledge stays in the `specifier` and `planner` skills (loaded per run), and the body is a short frontier-synthesis contract; if quality suffers, split back into `wf-specifier` (+1 agent) — the aliases already exist.
