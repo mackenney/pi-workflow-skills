@@ -140,6 +140,7 @@ while (true) {
     acceptance: ACCEPTANCE
   }));
   verdict = impl.structuredOutput;
+  if (impl.ok && verdict && verdict.verdict === "PASS" && !verdict.commit) verdict = { ...verdict, verdict: "FAIL", residual_risks: [...(verdict.residual_risks ?? []), "PASS without a commit sha"] };
   if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
     { result = { state: verdict?.verdict ?? "FAIL", stage: "fix", round, runId: impl.runId, verdict, error: impl.error }; break main; }
   }
