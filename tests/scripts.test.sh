@@ -94,6 +94,74 @@ runner_arg="$(sed -n 's/^  args: \["-c", "\(.*\)"\]$/\1/p' "$ROOT/agents/wf-host
 out="$(env_task "{\"script\":\"step-loader\",\"stepFile\":\"$P/step-01-x.md\"}" | PI_WORKFLOW_SKILLS_DIR="$ROOT" bash -c "$runner_arg")"
 check "wf-host-command runner args honour PI_WORKFLOW_SKILLS_DIR" '.step == "step-01-x"' "$out"
 
+# classifiers fail closed on off-schema input (review items 1-2)
+for bad in '{"findings":[{"sev":"P0"}]}' '{"P0":[1]}' '{"blockers":3,"important":[],"refuted":[]}' '{"blockers":{"a":1},"important":[],"refuted":[]}' '[1,2]'; do
+  echo "$bad" > "$T/r.json"; check "classify-review rejects $bad" 'has("error")' "$("$S/classify-review.sh" "$T/r.json")"
+done
+echo '{"blockers":[],"important":[],"refuted":[]}' > "$T/r.json"
+check "classify-review clean" '.blockers == 0 and .important == 0 and (has("error") | not)' "$("$S/classify-review.sh" "$T/r.json")"
+for bad in '{"results":[]}' '{"claims":[]}' '[{"verdict":"REFUTED"}]' '{"claims":[{"verdict":"Refuted - wrong line"}]}' '{"claims":[{"claim":"x"}]}'; do
+  echo "$bad" > "$T/f.json"; check "classify-factcheck rejects $bad" 'has("error")' "$("$S/classify-factcheck.sh" "$T/f.json")"
+done
+echo '{"claims":[{"verdict":"unverifiable"},{"verdict":"CONFIRMED"}]}' > "$T/f.json"
+check "classify-factcheck counts unverifiable" '.unverifiable == 1 and .total == 2 and (has("error") | not)' "$("$S/classify-factcheck.sh" "$T/f.json")"
+
+# ci-gate with a stub gh (review items 4-5)
+mkdir -p "$T/bin"
+cat > "$T/bin/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$2" = "view" ]; then echo "{\"headRefOid\":\"${STUB_HEAD:-abc1234def}\"}"; exit 0; fi
+if [ -n "${STUB_ERR:-}" ]; then echo "$STUB_ERR" >&2; exit 1; fi
+printf '%s\n' "$STUB_CHECKS"; exit 0
+GH
+chmod +x "$T/bin/gh"
+ci() { local task='{"pr":1}'; [ -n "${2:-}" ] && task="$2"; STUB_CHECKS="$1" PI_WF_GH="$T/bin/gh" "$S/ci-gate.sh" <<< "$task"; }
+check "ci: zero checks -> none" '.state == "none"' "$(ci '[]')"
+check "ci: unknown bucket -> unknown" '.state == "unknown"' "$(ci '[{"name":"a","bucket":"weird"}]')"
+check "ci: all pass -> green" '.state == "green"' "$(ci '[{"name":"a","bucket":"pass"},{"name":"b","bucket":"skipping"}]')"
+check "ci: only skipping -> none" '.state == "none"' "$(ci '[{"name":"b","bucket":"skipping"}]')"
+check "ci: fail -> red" '.state == "red" and (.failing | length) == 1' "$(ci '[{"name":"a","bucket":"pass"},{"name":"b","bucket":"fail"}]')"
+check "ci: cancel -> red" '.state == "red"' "$(ci '[{"name":"b","bucket":"cancel"}]')"
+check "ci: pending -> pending" '.state == "pending"' "$(ci '[{"name":"b","bucket":"pending"}]')"
+check "ci: no checks reported -> none" '.state == "none"' "$(STUB_ERR='no checks reported on the branch' PI_WF_GH="$T/bin/gh" "$S/ci-gate.sh" <<< '{"pr":1}')"
+check "ci: stale head sha" '.state == "stale"' "$(ci '[{"name":"a","bucket":"pass"}]' '{"pr":1,"expectSha":"fff0000"}')"
+check "ci: matching head sha" '.state == "green"' "$(ci '[{"name":"a","bucket":"pass"}]' '{"pr":1,"expectSha":"abc1234"}')"
+
+# terminal-gate strict parsing (review item 8)
+ledger "$T/tg/PROGRESS.md" "" "" $'## Steps\n- [x] a\n1. step-02 still to do'
+check "tg: non-checkbox list item in Steps" '.ok == false and any(.errors[]; test("not a \\[ \\]/\\[x\\] checkbox"))' "$(tg "$T/tg")"
+ledger "$T/tg/PROGRESS.md" "" "" $'## Steps\n- [x] a\n1. [ ] b'
+check "tg: numbered checkbox counts as open" '.ok == false and .openSteps == ["b"]' "$(tg "$T/tg")"
+ledger "$T/tg/PROGRESS.md" "- g-integ-1 owed by step-09 open" "" $'## Steps\n- [x] a'
+check "tg: bullet inside debt section" '.ok == false and any(.errors[]; test("outside the table"))' "$(tg "$T/tg")"
+ledger "$T/tg/PROGRESS.md" "" "The flaky CI job is still disabled (open)." $'## Steps\n- [x] a'
+check "tg: prose inside debt section" '.ok == false and any(.errors[]; test("outside the table"))' "$(tg "$T/tg")"
+ledger "$T/tg/PROGRESS.md" "<!-- note -->" "" $'## Steps\n- [x] a\n```\n- [ ] example in a fence\n```'
+check "tg: html comment and fenced example ignored" '.ok == true' "$(tg "$T/tg")"
+
+# validate-plan stricter checks (review items 9-11, 13)
+vp_mut() { mkplan; jq "$1" "$P/plan.json" > "$T/x" && mv "$T/x" "$P/plan.json"; [ -n "${2:-}" ] && { jq "$2" "$P/step-01-x.gates.json" > "$T/x" && mv "$T/x" "$P/step-01-x.gates.json"; }; vp; }
+check "vp: frontier tier has no lane" '.ok == false and any(.errors[]; test("no executor lane"))' "$(vp_mut '.steps[0].tier="frontier"' '.tier="frontier"')"
+check "vp: files required" '.ok == false and any(.errors[]; test("files must be"))' "$(vp_mut 'del(.steps[0].files)')"
+check "vp: duplicate step id" '.ok == false and any(.errors[]; test("duplicate step id"))' "$(vp_mut '.steps += [.steps[0]]')"
+check "vp: duplicate gate id" '.ok == false and any(.errors[]; test("duplicate gate id"))' "$(vp_mut '.steps[0].gates[1].id="g-build-1"' '.gates[1].id="g-build-1"')"
+check "vp: dangling coverage gate" '.ok == false and any(.errors[]; test("not a runnable gate"))' "$(vp_mut '.steps[0].coverage[0].gate="nope"' '.coverage[0].gate="nope"')"
+check "vp: all gates n/a" '.ok == false and any(.errors[]; test("no runnable gate"))' "$(vp_mut '.steps[0].gates |= map(del(.cmd) | .result="n/a" | .reason="x") | .steps[0].coverage=[]' '.gates |= map(del(.cmd) | .result="n/a" | .reason="x") | .coverage=[]')"
+check "vp: sidecar step mismatch" '.ok == false and any(.errors[]; test("sidecar \"step\""))' "$(vp_mut '.' '.step="step-09-other"')"
+check "vp: sidecar tier mismatch" '.ok == false and any(.errors[]; test("sidecar tier"))' "$(vp_mut '.' '.tier="deep"')"
+check "vp: sidecar path not the executed one" '.ok == false and any(.errors[]; test("not the file the executor loads"))' "$(vp_mut '.steps[0].sidecar="other.gates.json"')"
+mkplan; printf '# step-01-x\nGates: g-build-10 g-static-1 g-unit-1 g-e2e-smoke-1 g-regress-1\n' > "$P/step-01-x.md"
+check "vp: gate id substring does not count" '.ok == false and any(.errors[]; test("does not mention gate\\(s\\) g-build-1"))' "$(vp)"
+mkplan; ledger "$P/PROGRESS.md" "" "" $'## Steps\n- [ ] [step-010-x](./step-010-x.md)'
+check "vp: step id substring does not count" '.ok == false and any(.errors[]; test("no checklist item for step-01-x"))' "$(vp)"
+DEF='.gates[5] = {"id":"g-integ-1","class":"integ","result":"deferred","owed_by":"step-09","reason":"slow"}'
+check "vp: deferred gate needs open row" '.ok == false and any(.errors[]; test("needs an open row"))' "$(vp_mut ".steps[0]$DEF" "$DEF")"
+mkplan; jq ".steps[0]$DEF" "$P/plan.json" > "$T/x" && mv "$T/x" "$P/plan.json"; jq "$DEF" "$P/step-01-x.gates.json" > "$T/x" && mv "$T/x" "$P/step-01-x.gates.json"
+ledger "$P/PROGRESS.md" "| g-integ-1 | integ | step-09 | slow | open |" "" $'## Steps\n- [ ] [step-01-x](./step-01-x.md)'
+check "vp: deferred gate with open row" '.ok == true' "$(vp)"
+check "vp: deferred gate needs owed_by" '.ok == false and any(.errors[]; test("owed_by"))' "$(vp_mut '.steps[0].gates[5] = {"id":"g-integ-1","class":"integ","result":"deferred"}' '.gates[5] = {"id":"g-integ-1","class":"integ","result":"deferred"}')"
+check "vp: First-Artifact on Dockerfile with proxy-only build" '.ok == false and any(.errors[]; test("First-Artifact"))' "$(vp_mut '.steps[0].files=["Dockerfile"] | .steps[0].gates[0] += {"proxy":true,"real_gate":"docker build ."} | .steps[0].gates[3] = {"id":"g-e2e-smoke-1","class":"e2e-smoke","result":"n/a","reason":"x"}' '.gates[0] += {"proxy":true,"real_gate":"docker build ."} | .gates[3] = {"id":"g-e2e-smoke-1","class":"e2e-smoke","result":"n/a","reason":"x"}')"
+
 # generate-tier-overrides: the Default cell may carry prose after the model code span
 cat > "$T/AGENTS.md" <<'MD'
 ## Model Tiers

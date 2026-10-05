@@ -1,5 +1,5 @@
 // args: { spec: "/abs/spec.md", planDir: "/abs/plans/x", tier?: "deep"|"standard"|"fast"|"frontier",
-//         mode?: "structural"|"simple", angles?: number|[], maxSynthRounds?: 2, maxFixRounds?: 2 }
+//         mode?: "structural"|"simple", angles?: number|[], maxSynthRounds?: 3 }
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Gate commands run through the host shell, so the env override expands there (isolated test installs set it).
 const SKILLS = "${PI_WORKFLOW_SKILLS_DIR:-/home/ignacio/pr/pi-workflow-skills}";
@@ -25,7 +25,9 @@ if (!simple) {
       output: args.planDir + "/angle-" + n + "/plan-summary.md"
     }))
   );
-  angleOutputs = planRuns.map((r, i) => ({ angle: angles[i], ok: r.ok, output: r.output, runId: r.runId }));
+  // Pass paths, never child text: the synthesizer reads the files (r.output is the child's final message).
+  angleOutputs = planRuns.map((r, i) => ({ angle: angles[i], ok: r.ok, output: args.planDir + "/angle-" + angles[i] + "/plan-summary.md", runId: r.runId, error: r.error }));
+  if (!angleOutputs.some((a) => a.ok)) return { state: "FAIL", stage: "angles", errors: angleOutputs.map((a) => a.error) };
 }
 
 const VALIDATE_SCHEMA = {
@@ -44,13 +46,15 @@ while (true) {
     ? [
         "Mode: plan.",
         simple ? "Simple mode: single-pass structural plan from the spec directly (no angles)." : "Reconcile these angle plans into one unified structural plan:",
-        ...(simple ? [] : angleOutputs.map((a) => "Angle " + a.angle + " output: " + a.output)),
+        ...(simple ? [] : angleOutputs.filter((a) => a.ok).map((a) => "Angle " + a.angle + " output: " + a.output)),
         "Spec/investigation: " + args.spec,
         "Executor tier: " + tier,
         "Write the unified plan (step files + *.gates.json sidecars) under " + args.planDir + "/, and a single machine-readable index at " + planOutputPath + " (schema: {steps:[{id,tier,files,gates,coverage,hard_splits_declared}]})."
       ].join("\n")
     : [
         "Mode: plan. Fix round " + round + ".",
+        "Spec/investigation: " + args.spec,
+        ...(simple ? [] : angleOutputs.filter((a) => a.ok).map((a) => "Angle " + a.angle + " output: " + a.output)),
         "Your previous plan output: " + planOutputPath,
         "validate-plan.sh errors to fix:", JSON.stringify(validation?.errors ?? []),
         "Rewrite " + planOutputPath + " (and the affected step files/sidecars) to resolve every listed error."
@@ -77,8 +81,8 @@ while (true) {
 
 // 3. Fact-check the plan.
 const CLASSIFY_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["refuted", "partial", "disputed"],
-  properties: { refuted: { type: "integer" }, partial: { type: "integer" }, disputed: { type: "integer" }, total: { type: "integer" } }
+  type: "object", additionalProperties: false, required: ["refuted", "partial", "disputed", "total"],
+  properties: { refuted: { type: "integer" }, partial: { type: "integer" }, disputed: { type: "integer" }, unverifiable: { type: "integer" }, total: { type: "integer" }, error: { type: "string" } }
 };
 // One report path per round: the runtime rejects two children resolving output to the same file.
 let factcheckPath = args.planDir + "/factcheck-0.json";
@@ -91,13 +95,24 @@ let fc = await runs.run("factcheck-0", {
   }
 });
 let fcClass = fc.structuredOutput; // typed gate's parsed stdout
+// Fail closed: an unusable report (classifier error, no claims, failed run) is not a clean fact-check.
+const fcUnusable = (run, cls) => !run.ok || !cls || cls.error || !(cls.total > 0);
+if (fcUnusable(fc, fcClass)) return { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error };
 
 // 4. If refuted+partial > 0: one builtin-worker fix pass, then a second fact-check round.
 if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
-  await runs.run("plan-fix-0", {
+  // The fix pass rewrites plan.json, step files and sidecars, so it runs under the same validate-plan gate as synthesis.
+  const fix = await runs.run("plan-fix-0", {
     agent: "worker", skill: "step-contract", label: "Fix plan per fact-check",
-    task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars) per the REFUTED/PARTIAL/DISPUTED claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + ")."
+    task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars/PROGRESS.md) per the REFUTED/PARTIAL/DISPUTED claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + "). Keep plan.json and every sidecar identical where they overlap.",
+    gate: {
+      command: SKILLS + "/scripts/validate-plan.sh " + planOutputPath,
+      output: "json", schema: VALIDATE_SCHEMA, timeoutMs: 120000
+    }
   });
+  if (!fix.ok || !fix.structuredOutput || fix.structuredOutput.ok !== true) {
+    return { state: "FAIL", stage: "plan-fix", planPath: planOutputPath, factcheckPath, validation: fix.structuredOutput, error: fix.error };
+  }
   factcheckPath = args.planDir + "/factcheck-1.json";
   fc = await runs.run("factcheck-1", {
     agent: "wf-fact-checker", label: "Re-fact-check plan", output: factcheckPath,
@@ -108,9 +123,11 @@ if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
     }
   });
   fcClass = fc.structuredOutput;
+  if (fcUnusable(fc, fcClass)) return { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error };
 }
 
-const pendingDecisions = (fcClass && fcClass.disputed > 0) ? ["disputed fact-check claims remain after a second fresh run - see " + factcheckPath] : [];
+// DISPUTED claims are not defects the worker can fix; they go to the human (step-contract "Pending decisions").
+const pendingDecisions = (fcClass && fcClass.disputed > 0) ? [fcClass.disputed + " disputed fact-check claim(s) - see " + factcheckPath] : [];
 
 return {
   state: fcClass && fcClass.refuted === 0 && fcClass.partial === 0 ? "PASS" : "FAIL",

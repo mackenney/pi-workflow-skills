@@ -58,14 +58,17 @@ const contracts = [];
 for (let i = 0; i < loaded.length; i += 1) {
   let c = null;
   try { c = loaded[i].ok ? JSON.parse(loaded[i].output) : null; } catch (e) { c = null; }
-  if (!c || c.error) return { state: "BLOCKED", reason: "gate sidecar unreadable for " + args.stepFiles[i], error: c?.error ?? loaded[i].error };
-  contracts.push(c);
+  if (!c || c.error || !Array.isArray(c.gates)) return { state: "BLOCKED", reason: "gate sidecar unusable for " + args.stepFiles[i], error: c?.error ?? loaded[i].error ?? "no gates array" };
+  // Same tier resolution and default as execute-step.js; an unknown tier blocks the wave instead of silently downgrading.
+  const tier = args.tier ?? c.tier ?? "deep";
+  if (!WORKER_BY_TIER[tier]) return { state: "BLOCKED", reason: "no worker lane for tier " + tier + " in " + args.stepFiles[i] + " (lanes: " + Object.keys(WORKER_BY_TIER).join(", ") + ")" };
+  contracts.push({ ...c, _tier: tier });
 }
 
 // 2. Workers in parallel, isolated worktrees, runtime-executed gates.
 const workers = await runs.all(contracts.map((c, i) => {
-  const tier = args.tier ?? c.tier ?? "standard";
-  const lane = WORKER_BY_TIER[tier] ?? WORKER_BY_TIER.standard;
+  const tier = c._tier;
+  const lane = WORKER_BY_TIER[tier];
   return {
     key: "impl-" + keyOf(args.stepFiles[i]), agent: lane.agent, label: "Implement " + c.step, worktree: true,
     ...(lane.skill ? { skill: lane.skill } : {}),
@@ -82,7 +85,7 @@ const workers = await runs.all(contracts.map((c, i) => {
       level: "verified",
       criteria: ["Every non-n/a gate in the sidecar passes", "No undeclared proxy; no scope outside the step"],
       evidence: ["changed-files", "commands-run", "residual-risks", "no-staged-files", "diff-summary"],
-      verify: c.gates.filter((g) => g.cmd && g.result !== "n/a").map((g) => ({ id: g.id, command: g.cmd, timeoutMs: g.timeoutMs ?? 900000 })),
+      verify: c.gates.filter((g) => g.cmd && g.result !== "n/a" && g.result !== "deferred").map((g) => ({ id: g.id, command: g.cmd, timeoutMs: g.timeoutMs ?? 900000 })),
       report: "on"
     }
   };

@@ -22,18 +22,19 @@ const REVIEW_CLASS_SCHEMA = {
 };
 const FC_CLASS_SCHEMA = {
   type: "object", additionalProperties: true, required: ["refuted", "partial", "disputed"],
-  properties: { refuted: { type: "integer" }, partial: { type: "integer" }, disputed: { type: "integer" }, total: { type: "integer" } }
+  properties: { refuted: { type: "integer" }, partial: { type: "integer" }, disputed: { type: "integer" }, unverifiable: { type: "integer" }, total: { type: "integer" }, error: { type: "string" } }
 };
 
 const rounds = [];
 let final = null;
+if (!(maxRounds >= 1)) return { state: "BLOCKED", reason: "maxRounds must be >= 1", rounds };
 
 for (let round = 0; round < maxRounds; round += 1) {
   const dir = args.reviewDir + "/round-" + round;
   const prior = round > 0 ? "Prior round's fixed findings: " + args.reviewDir + "/round-" + (round - 1) + "/synthesis.json - confirm they are resolved; do not re-raise resolved items." : "";
 
   // 1. Independent angle reviews. Last angle takes the cross-vendor model when requested.
-  const angleRuns = await runs.all(
+  let angleRuns = await runs.all(
     angles.map((angle, i) => {
       const item = {
         key: "r" + round + "-angle-" + i,
@@ -47,11 +48,29 @@ for (let round = 0; round < maxRounds; round += 1) {
       return item;
     })
   );
-  const failedAngles = angleRuns.filter((r) => !r.ok);
-  if (failedAngles.length === angleRuns.length) {
-    return { state: "FAIL", stage: "angles", round, errors: angleRuns.map((r) => r.error) };
+  // A missing angle is a missing perspective: retry each failed angle once (own output path, the runtime forbids
+  // reusing one), and fail the round if any is still missing rather than synthesising the survivors into a PASS.
+  const angleOut = angles.map((_, i) => dir + "/angle-" + i + ".md");
+  const failedIdx = angleRuns.map((r, i) => (r.ok ? -1 : i)).filter((i) => i >= 0);
+  if (failedIdx.length) {
+    const retries = await runs.all(failedIdx.map((i) => ({
+      key: "r" + round + "-angle-" + i + "-retry", agent: "wf-code-reviewer", label: "Review r" + round + " " + angles[i] + " (retry)",
+      task: ["mode: \"angle\"", "Angle: " + angles[i], "Target: " + args.target, repoLine, rangeLine, prior,
+             "Write your findings (markdown, every finding with file:line + evidence + severity P0/P1/P2) to your output path."].filter(Boolean).join("\n"),
+      output: dir + "/angle-" + i + "-retry.md",
+      ...(args.diversityModel && i === angles.length - 1 ? { model: args.diversityModel } : {})
+    })));
+    // Results may be frozen; rebuild instead of mutating.
+    const retryByIdx = {};
+    retries.forEach((rr, j) => { retryByIdx[failedIdx[j]] = rr; });
+    angleRuns = angleRuns.map((r0, i) => (retryByIdx[i] && retryByIdx[i].ok ? retryByIdx[i] : r0));
+    failedIdx.forEach((i) => { if (retryByIdx[i] && retryByIdx[i].ok) angleOut[i] = dir + "/angle-" + i + "-retry.md"; });
   }
-  const anglePaths = angleRuns.map((r, i) => (r.ok ? dir + "/angle-" + i + ".md" : null)).filter(Boolean);
+  const failedAngles = angleRuns.map((r, i) => (r.ok ? null : { angle: angles[i], error: r.error })).filter(Boolean);
+  if (failedAngles.length) {
+    return { state: "FAIL", stage: "angles", round, failedAngles, rounds };
+  }
+  const anglePaths = angleOut;
 
   // 2. Optional cross-exam: each angle reviewer (resumed, so it keeps its own context) reads the others.
   // `resume` does not re-capture per-launch fields from the retained contract (confirmed for outputSchema in
@@ -64,7 +83,7 @@ for (let round = 0; round < maxRounds; round += 1) {
         key: "r" + round + "-xexam-" + i,
         resume: r.runId,
         label: "Cross-exam r" + round + " " + angles[i],
-        task: "Cross-examine the other reviewers' findings: " + anglePaths.filter((p) => p !== dir + "/angle-" + i + ".md").join(", ") +
+        task: "Cross-examine the other reviewers' findings: " + anglePaths.filter((p) => p !== angleOut[i]).join(", ") +
               ". For each finding: AGREE / DISPUTE (with evidence) / ADD-CONTEXT. Write only your cross-exam section to your output path.",
         output: dir + "/angle-" + i + "-xexam.md"
       } : null)).filter(Boolean)
@@ -80,7 +99,6 @@ for (let round = 0; round < maxRounds; round += 1) {
     task: ["mode: \"synthesis\"", "Target: " + args.target, repoLine, rangeLine,
            "Angle findings files: " + anglePaths.join(", "),
            xexamPaths.length ? "Cross-exam files: " + xexamPaths.join(", ") : "",
-           failedAngles.length ? "Note: " + failedAngles.length + " angle run(s) failed and produced no findings." : "",
            "Write JSON to your output path, exactly: {\"blockers\":[{\"title\",\"file\",\"line\",\"evidence\",\"fix\"}],\"important\":[...same shape],\"refuted\":[{\"title\",\"reason\"}]}. blockers = P0 (must fix before merge); important = P1 only; P2/nits/hygiene go in an optional \"nits\" array, never in important (the loop stops when blockers and important are both empty); refuted = angle findings you rejected with evidence."].filter(Boolean).join("\n"),
     gate: {
       command: SKILLS + "/scripts/classify-review.sh " + synthPath,
@@ -90,6 +108,13 @@ for (let round = 0; round < maxRounds; round += 1) {
   const reviewClass = synth.structuredOutput;
   if (!synth.ok || !reviewClass || reviewClass.error) {
     return { state: "FAIL", stage: "synth", round, reviewClass, error: synth.error, rounds };
+  }
+
+  // Early stop before spending a fact-check: a clean synthesis has no findings to verify.
+  if (reviewClass.blockers === 0 && reviewClass.important === 0) {
+    rounds.push({ round, synthPath, reviewClass, diversityModel: args.diversityModel ?? null });
+    final = { state: "PASS", round };
+    break;
   }
 
   // 4. Fact-check the synthesis so the fix pass only acts on verified findings.
@@ -107,10 +132,8 @@ for (let round = 0; round < maxRounds; round += 1) {
 
   const record = { round, synthPath, fcPath, reviewClass, fcClass, diversityModel: args.diversityModel ?? null };
   rounds.push(record);
-
-  // Early stop: clean round means no blockers and no important findings survive.
-  if (reviewClass.blockers === 0 && reviewClass.important === 0) {
-    final = { state: "PASS", round };
+  if (!fc.ok || !fcClass || fcClass.error || !(fcClass.total > 0)) {
+    final = { state: "FAIL", stage: "factcheck", round, error: fcClass?.error ?? fc.error ?? "empty fact-check report" };
     break;
   }
   if (round === maxRounds - 1) {

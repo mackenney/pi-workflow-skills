@@ -92,6 +92,8 @@ silently splitting or silently merging.
 
 ## Tier → scope (planner sizing input; the executor tier is a planning input, not a planner output)
 
+`execute-step.js`/`execute-wave.js` have worker lanes for **fast, standard and deep** only; `validate-plan.sh` rejects a step whose tier has no lane. Size frontier-scale work as deep steps (or split it) until a frontier worker exists.
+
 | Executor tier | Files touched | Distinct concerns | Net LOC (indicative) | Architectural decisions | Gate authoring |
 |---|---|---|---|---|---|
 | **fast** | 1–3 | 1, fully specified | ≤150 | None — every name, signature, and path is pre-decided in the step file | 100% mechanical gates: exact command + exact expected output. No gate requiring judgment. |
@@ -125,7 +127,7 @@ cross-checks the two do not disagree.
 }
 ```
 
-Every `gates[]` entry with a `cmd` and no explicit `"result": "n/a"` becomes an
+A sidecar may pre-set only `"result": "n/a"` (with `reason`) or `"result": "deferred"` (with `owed_by`, the step that runs the real gate, plus an `open` row in "Tech debt / deferred gates" naming the gate id). Every other `gates[]` entry with a `cmd` becomes an
 `acceptance.verify[]` item the runtime executes; the worker's own claims are evidence, not
 verdict. `timeoutMs` defaults to 120000 (the runtime's own default) but real builds must set it
 explicitly higher.
@@ -194,7 +196,7 @@ The plan directory's ledger file (`PROGRESS.md` by default) is authoritative —
 
 The `## Steps` section is a `- [ ]`/`- [x]` checklist, one item per step; the parent ticks a step after applying its ledger. The terminal gate fails while any item is unchecked, or when the section is missing or empty.
 
-Every data row is a real item. An empty table (header + separator only) means nothing recorded; never write placeholder rows such as `| (none) | | |` — they have no valid Status and fail the terminal gate.
+Inside the two debt sections every non-blank line must be part of the table (an HTML comment is allowed); prose or list items there fail the terminal gate, because they could hide an open item. Inside `## Steps` every list item must be a checkbox. Every data row is a real item. An empty table (header + separator only) means nothing recorded; never write placeholder rows such as `| (none) | | |` — they have no valid Status and fail the terminal gate.
 
 **Status grammar** (exactly one of):
 - `open` — the plan is **not** complete while any row reads `open`.

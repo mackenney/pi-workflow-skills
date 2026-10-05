@@ -287,6 +287,7 @@ In Progress | Blocked | Complete
 ## Pending decisions (human)
 <Unresolved after a second fresh fact-check/review round, or a worker escalation — if none, omit>
 
+<!-- The plan is not complete while any row in the two ledger tables below reads `open` or any ## Steps item is unchecked. Status grammar: step-contract. No model writes `waived`. Leave a table empty (header + separator only) when there is nothing to record; placeholder rows block completion, and so does any non-table line inside these sections. -->
 ## Tech debt / deferred gates
 | Gate | Class | Owed by | Reason deferred | Status |
 |------|-------|---------|-----------------|--------|
@@ -295,7 +296,6 @@ In Progress | Blocked | Complete
 | Check | Where | Why | Status |
 |-------|-------|-----|--------|
 
-**The plan is not complete while any row in the two tables above reads `open`.** Status is exactly one of `open`, `discharged <commit>`, or `waived by <human> <date>: <reason>` — see `step-contract` for the full grammar. No model writes `waived`. Leave a table empty (header and separator only) when there is nothing to record: `terminal-gate` reads every data row, so a placeholder row like `| (none) | | |` has no valid Status and blocks completion.
 
 ## Wave Map
 
