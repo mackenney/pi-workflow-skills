@@ -52,7 +52,7 @@ function parseArgs(argv) {
       process.exit(1);
     }
   }
-  if (!opts.writePatchPath) opts.writePatchPath = path.join(HOME_AGENT_DIR, "tier-overrides.patch.json");
+  if (!opts.writePatchPath) opts.writePatchPath = path.join(path.dirname(opts.settings), "tier-overrides.patch.json");
   return opts;
 }
 
@@ -278,9 +278,7 @@ function main() {
       const curVal = current[key];
       const desVal = desired[key];
       let cls;
-      if (isOverrideActive && key !== "disabled") {
-        cls = "override-active";
-      } else if (curVal === undefined) {
+      if (curVal === undefined) {
         cls = "new";
       } else if (deepEqual(curVal, desVal)) {
         cls = "ok";
@@ -289,6 +287,9 @@ function main() {
       } else {
         cls = "drift";
       }
+      // An applied override is steady state, not pending work; only ok rows are relabelled so
+      // an override that has not been applied yet (or drifted) still surfaces as a change.
+      if (cls === "ok" && isOverrideActive && key !== "disabled") cls = "override-active";
       rows.push({ agent: a.name, key, current: curVal, desired: desVal, class: cls });
     }
 
@@ -308,6 +309,20 @@ function main() {
   const deadOverrides = Object.keys(agentOverrides).filter((name) => !managedNames.has(name) && !knownHandOwned.has(name) && !localAgentFiles.has(name));
   for (const d of deadOverrides) warnings.push(`agentOverrides["${d}"] targets an agent that is neither managed nor a known hand-owned/local agent (candidate dead override)`);
 
+  const projectSettingsPath = path.join(process.cwd(), ".pi", "settings.json");
+  if (fs.existsSync(projectSettingsPath)) {
+    let projectOverrides = {};
+    try {
+      projectOverrides = JSON.parse(fs.readFileSync(projectSettingsPath, "utf8")).subagents?.agentOverrides ?? {};
+    } catch (e) {
+      warnings.push(`${projectSettingsPath} is not valid JSON (${e.message}); project overrides not checked`);
+    }
+    // Project settings win over user settings at runtime, so they can silently defeat the managed binding.
+    for (const name of Object.keys(projectOverrides)) {
+      if (managedNames.has(name)) warnings.push(`project settings ${projectSettingsPath} set subagents.agentOverrides["${name}"], which shadows the managed binding (not merged)`);
+    }
+  }
+
   const summaryCounts = { new: 0, ok: 0, "upstream-change": 0, "override-active": 0, drift: 0 };
   for (const r of rows) summaryCounts[r.class] = (summaryCounts[r.class] ?? 0) + 1;
 
@@ -322,7 +337,7 @@ function main() {
     for (const w of warnings) console.log(`warning: ${w}`);
   }
 
-  const hasPendingChanges = rows.some((r) => r.class !== "ok");
+  const hasPendingChanges = rows.some((r) => r.class !== "ok" && r.class !== "override-active");
   const driftRows = rows.filter((r) => r.class === "drift");
 
   if (opts.mode === "dry-run") {
@@ -366,7 +381,7 @@ function main() {
     newSettings.subagents.agentOverrides = newSettings.subagents.agentOverrides ?? {};
 
     for (const r of rows) {
-      if (r.class === "ok") continue;
+      if (r.class === "ok" || r.class === "override-active") continue;
       newSettings.subagents.agentOverrides[r.agent] = newSettings.subagents.agentOverrides[r.agent] ?? {};
       newSettings.subagents.agentOverrides[r.agent][r.key] = r.desired;
     }
@@ -387,7 +402,9 @@ function main() {
         delete newState.applied[a.name];
         continue;
       }
-      newState.applied[a.name] = { ...newSettings.subagents.agentOverrides[a.name] };
+      // Only generator-owned keys: hand-owned keys (tools, defaultContext, ...) must not be snapshotted.
+      const entry = newSettings.subagents.agentOverrides[a.name] ?? {};
+      newState.applied[a.name] = Object.fromEntries(desiredByAgent[a.name].ownedKeys.filter((k) => k in entry).map((k) => [k, entry[k]]));
     }
     fs.writeFileSync(statePath, JSON.stringify(newState, null, 2) + "\n");
 

@@ -182,7 +182,7 @@ The plan directory's ledger file (`PROGRESS.md` by default) is authoritative —
 - <one line, with commit or step reference>
 
 ## Pending decisions (human)
-- <one line — unresolved after a second fresh fact-check/review round, or a worker escalation>
+- <one line — a disputed fact-check claim, or a worker escalation>
 
 ## Tech debt / deferred gates
 | Gate | Class | Owed by | Reason deferred | Status |

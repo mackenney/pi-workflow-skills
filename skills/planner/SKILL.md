@@ -285,7 +285,7 @@ In Progress | Blocked | Complete
 <One line per decision, with commit or step reference — appended by scripts/ledger-apply.sh from each step's typed verdict>
 
 ## Pending decisions (human)
-<Unresolved after a second fresh fact-check/review round, or a worker escalation — if none, omit>
+<Disputed fact-check claims, or a worker escalation — if none, omit>
 
 <!-- The plan is not complete while any row in the two ledger tables below reads `open` or any ## Steps item is unchecked. Status grammar: step-contract. No model writes `waived`. Leave a table empty (header + separator only) when there is nothing to record; placeholder rows block completion, and so does any non-table line inside these sections. -->
 ## Tech debt / deferred gates

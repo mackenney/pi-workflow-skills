@@ -9,7 +9,7 @@ You are playing the **Fact-Checker** role. Your job is to take a context contain
 
 ## Subagent Mechanism
 
-Every "dispatch a checker" / "spawn a tiebreaker" below states intent, not call syntax: one `wf-fact-checker` child per checker, a cluster's checkers issued together in parallel with fresh independent context, and one second fresh `wf-fact-checker` run as tiebreaker. For plan and review fact-checks, `workflows/plan-factcheck-fix.js` and `workflows/review-factcheck-fix.js` own dispatch and gating; do not improvise `subagent(...)` calls for those. Model binding lives in agent `tier:` frontmatter, not here.
+Every "dispatch a checker" below states intent, not call syntax: one `wf-fact-checker` child per checker, a cluster's checkers issued together in parallel with fresh independent context. For plan and review fact-checks, `workflows/plan-factcheck-fix.js` and `workflows/review-factcheck-fix.js` own dispatch and gating; do not improvise `subagent(...)` calls for those. Model binding lives in agent `tier:` frontmatter, not here.
 
 ## When to Use
 
@@ -351,28 +351,23 @@ For each claim, compare the two verdicts:
 | CONFIRMED | CONFIRMED | ✅ CONFIRMED — pass through |
 | REFUTED | REFUTED | ❌ REFUTED — pass through |
 | UNVERIFIABLE | UNVERIFIABLE | ❓ UNVERIFIABLE — pass through |
-| CONFIRMED | REFUTED (or vice versa) | ⚡ DISPUTED — escalate to tiebreaker |
-| Any | PARTIAL (or vice versa) | ⚡ DISPUTED — escalate to tiebreaker |
-| Any | UNVERIFIABLE (when other has verdict) | Treat as DISPUTED — escalate |
+| CONFIRMED | REFUTED (or vice versa) | ⚡ DISPUTED — human decision |
+| Any | PARTIAL (or vice versa) | ⚡ DISPUTED — human decision |
+| Any | UNVERIFIABLE (when other has verdict) | Treat as DISPUTED — human decision |
 
-### Tiebreaker
+### Disputed claims
 
-For each DISPUTED claim, dispatch a second, fresh `wf-fact-checker` run (never a resume). If the claim is still DISPUTED after it, do not tiebreak further: record it as a **Pending decisions (human)** row in PROGRESS.md (see `step-contract`). Pass the tiebreak run:
-- The claim
-- Both checker outputs in full (verdicts + evidence)
-- Instruction: "Break the tie. Read the evidence from both agents, then independently verify the claim using the highest available evidence tier. Return a single verdict with your own evidence."
-
-The tiebreaker verdict is final.
+There is no tiebreak run. Record each DISPUTED claim, with both checkers' verdicts and evidence, as a **Pending decisions (human)** row in PROGRESS.md (see `step-contract`); the human decides.
 
 ### Synthesis
 
 Synthesize as normal (Step 5), using:
 - Agreed verdicts from the two-agent pairs
-- Tiebreaker verdicts for disputed claims
+- Disputed claims listed as pending human decisions
 
 Add a line to the report header:
 ```
-Mode: Thorough — 2 agents per cluster, N disputes resolved by tiebreaker
+Mode: Thorough — 2 agents per cluster, N disputes sent to the human
 ```
 
 ---
