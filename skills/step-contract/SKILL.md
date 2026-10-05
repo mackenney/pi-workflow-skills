@@ -150,6 +150,7 @@ explicitly higher.
 }
 ```
 
+`commit` is a 7–40 char lowercase hex sha, or empty only on FAIL/BLOCKED (the schema enforces the pattern; the workflows turn a PASS without a commit into FAIL).
 Any gate with `result: "proxy"` must have a matching `proxies_used` entry. Any `deferred` entry
 becomes an `open` row in the ledger's "Tech debt / deferred gates" section. If no
 `structured_output` tool is present, end with a `STEP-VERDICT:` line followed by this object as a
@@ -168,6 +169,15 @@ truncatable from the front.
   "ledger_gaps": ["..."]
 }
 ```
+
+## Resuming a stopped step
+
+A step that stopped after its commit exists is resumed, not re-implemented: `execute-step.js` takes
+`resume: {from, commit, workerRunId?, guidance?, resultPath?}` and first proves `commit` exists and descends from
+`base_commit` (or `baseCommit`); otherwise it is `blocked`. `from`: `gates` (re-run the sidecar gates on `commit`,
+which must be checked out, then review), `review` (review `commit`), `fix` (continue the retained worker with
+`guidance`, or a fresh worker from `commit`, then review), `ci` (CI read bound to `commit`, then ledger), `ledger`
+(apply the ledger from `resultPath` only). Every non-PASS result records `resumePoint: {from, commit, workerRunId, args}`.
 
 ## PROGRESS.md ledger — sections and row grammar
 

@@ -2,6 +2,8 @@
 // Lets a sandboxed workflow (no fs) persist its full result next to the run: {"path": "/abs/x.json", "json": {...}},
 // {"path": "/abs/x.md", "text": "..."}, or {"files": [ {path, json|text}, ... ]} on stdin -> {"ok": true, "paths": [...]}.
 // {"check": ["/abs/a", ...]} -> {"ok": true, "missing": [...]} reports which paths do not exist (nothing is written).
+// {"read": "/abs/x.json"} -> {"ok": true, "json": {...}} returns a prior result (a resumed step needs its earlier verdict;
+// the sandbox has no fs). Same path rules; capped at 60000 bytes to stay below the runner's 64 KiB stdout cap.
 // Always exits 0.
 // Only absolute .json/.md paths without ".." segments; the parent directory is created.
 import fs from "node:fs";
@@ -11,11 +13,19 @@ const done = (o) => { process.stdout.write(JSON.stringify(o) + "\n"); process.ex
 let task;
 try { task = JSON.parse(fs.readFileSync(0, "utf8")); } catch (e) { done({ ok: false, error: "bad task JSON: " + e.message }); }
 if (Array.isArray(task.check)) done({ ok: true, missing: task.check.filter((p) => typeof p !== "string" || !path.isAbsolute(p) || !fs.existsSync(p)) });
+const badPath = (p) => typeof p !== "string" || !path.isAbsolute(p) || p.split(/[\\/]/).includes("..") || !/\.(json|md)$/.test(p);
+if (task.read !== undefined) {
+  if (badPath(task.read) || !task.read.endsWith(".json")) done({ ok: false, error: "read path must be absolute, end in .json, and contain no '..': " + task.read });
+  let st;
+  try { st = fs.statSync(task.read); } catch (e) { done({ ok: false, error: "cannot read " + task.read + ": " + e.message }); }
+  if (st.size > 60000) done({ ok: false, error: task.read + " is " + st.size + " bytes (cap 60000)" });
+  try { done({ ok: true, json: JSON.parse(fs.readFileSync(task.read, "utf8")) }); } catch (e) { done({ ok: false, error: "cannot parse " + task.read + ": " + e.message }); }
+}
 const files = Array.isArray(task.files) ? task.files : [task];
 const plan = [];
 for (const f of files) {
   const p = f?.path;
-  if (typeof p !== "string" || !path.isAbsolute(p) || p.split(/[\\/]/).includes("..") || !/\.(json|md)$/.test(p)) done({ ok: false, error: "path must be absolute, end in .json or .md, and contain no '..': " + p });
+  if (badPath(p)) done({ ok: false, error: "path must be absolute, end in .json or .md, and contain no '..': " + p });
   const body = f.json !== undefined ? JSON.stringify(f.json, null, 2) + "\n" : typeof f.text === "string" ? f.text : null;
   if (body === null) done({ ok: false, error: "need json or text for " + p });
   plan.push([p, body]);
