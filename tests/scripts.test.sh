@@ -188,6 +188,8 @@ check "write-artifact: rejects other extensions" '.ok == false' "$(echo '{"path"
 out="$(env_task '{"script":"write-artifact","path":"'"$T"'/via-host.json","json":{"y":2}}' | "$S/host-command.sh")"
 check "write-artifact via host-command" '.ok == true' "$out"
 
+check "write-artifact: check reports missing" '.ok == true and .missing == ["/nope/x"]' "$(echo '{"check":["/tmp","/nope/x"]}' | "$S/write-artifact.sh")"
+
 # generate-tier-overrides: the Default cell may carry prose after the model code span
 cat > "$T/AGENTS.md" <<'MD'
 ## Model Tiers

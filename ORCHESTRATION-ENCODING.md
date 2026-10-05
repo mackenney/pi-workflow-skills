@@ -729,7 +729,7 @@ This design is pi-subagents-specific by construction: typed gates, `acceptance.v
 | e2e (e2e-tester) | single-agent stage, `worker` + `e2e-tester` skill | spec/plan path, running stack | e2e report |
 | done-check | `terminal-gate.js` | plan dir; `pr` | gate JSON |
 
-A *single-agent stage* is one child launch with a task from the table, `outputSchema` = the envelope and `output: <stageDir>/brief.json` (observed 2026-10-05: with both set, the runtime saves the structured result to the `output` path), and its details written to a named file in the stage directory. Segments the table does not cover are dispatched as before, but still return the envelope.
+A *single-agent stage* runs through `workflows/stage.js` `{stage, agent, task, stageDir, skill?, detailFile?, helpers?}`: the script attaches the envelope `outputSchema` and `output: <stageDir>/brief.json`, requires the detail file to exist, retries once on `delegate` otherwise, and writes a `blocked` envelope itself if that fails. Optional `helpers` (e.g. investigation scouts) run in parallel without a schema, their final replies saved by the runtime to `<stageDir>/<file>`. The coordinator never carries the schema (observed 2026-10-05: after a haiku `scout` rejected the envelope schema, the parent launched every later stage without one, and the briefs drifted to `ok`/`needs-fix`).
 
 **Envelope** (every stage, workflow or single agent):
 

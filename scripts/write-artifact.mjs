@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Lets a sandboxed workflow (no fs) persist its full result next to the run: {"path": "/abs/x.json", "json": {...}},
 // {"path": "/abs/x.md", "text": "..."}, or {"files": [ {path, json|text}, ... ]} on stdin -> {"ok": true, "paths": [...]}.
+// {"check": ["/abs/a", ...]} -> {"ok": true, "missing": [...]} reports which paths do not exist (nothing is written).
 // Always exits 0.
 // Only absolute .json/.md paths without ".." segments; the parent directory is created.
 import fs from "node:fs";
@@ -9,6 +10,7 @@ import path from "node:path";
 const done = (o) => { process.stdout.write(JSON.stringify(o) + "\n"); process.exit(0); };
 let task;
 try { task = JSON.parse(fs.readFileSync(0, "utf8")); } catch (e) { done({ ok: false, error: "bad task JSON: " + e.message }); }
+if (Array.isArray(task.check)) done({ ok: true, missing: task.check.filter((p) => typeof p !== "string" || !path.isAbsolute(p) || !fs.existsSync(p)) });
 const files = Array.isArray(task.files) ? task.files : [task];
 const plan = [];
 for (const f of files) {

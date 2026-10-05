@@ -52,7 +52,7 @@ Every stage returns, and every child you launch directly must return, exactly th
 - `actionables`: `decision` = needs the user; `fix` = mechanical next work; `info` = worth knowing. `ref` points at the file (and anchor) holding the detail.
 - `artifacts.primary`: the main output (report, spec, plan.json, PROGRESS.md); `details`: supporting files.
 
-The workflows return this envelope themselves and write `brief.json` + `result.json` in their stage directory. For a single-agent stage, launch the child with `output: "<stageDir>/brief.json"` and `outputSchema: <envelope>` — the runtime saves the structured result there — and tell it to write its detailed output to a named file in `<stageDir>`.
+The workflows return this envelope themselves and write `brief.json` (+ `result.json`) in their stage directory. Single-agent stages run through `stage.js`, which attaches the schema, retries once on `delegate` if the child returns no valid envelope, and writes a `blocked` envelope itself if that fails. You never launch a stage child directly and never pass the schema yourself. If a segment truly needs an ad-hoc child, launch it through `stage.js` too.
 
 ---
 
@@ -62,20 +62,20 @@ The workflows return this envelope themselves and write `brief.json` + `result.j
 
 | Stage | User may write | Mechanism | Inputs → args | Overrides |
 |---|---|---|---|---|
-| **investigate** | investigator, investigate X, find out why | Parent dispatches 1–5 parallel `scout` children (angles per the `investigator` skill; each writes `<stageDir>/scout-N.md`, returns the envelope), then one `delegate` child with `skill: "investigator"` merges them into `<stageDir>/findings.md` | topic text, scope paths | scout count, angles |
-| **spec** | specifier, spec, write a spec | `wf-synthesizer` child, `skill: "specifier"`, task starts `Mode: spec.`; writes the spec file | findings path (or user's description) → spec path (repo convention, else `<planDir>/SPEC.md`) | — |
-| **fact-check-doc** | fact-checker (after anything that is not plan/review) | `wf-fact-checker` child; writes `<stageDir>/factcheck.json` `{claims:[{claim, verdict, evidence}]}` | document path | — |
-| **fix** | fix (after fact-check-doc) | `worker` child with the fact-check path; fixes REFUTED/PARTIAL items in the checked document only, skips DISPUTED/UNVERIFIABLE unless it can confirm them | document + fact-check paths | — |
+| **investigate** | investigator, investigate X, find out why | `stage.js` `{stage: "investigate", agent: "delegate", skill: "investigator", detailFile: "findings.md", helpers: [1–5 × {agent: "scout", task: <one angle each, per the investigator skill>, file: "scout-N.md"}]}` | topic text, scope paths | scout count, angles |
+| **spec** | specifier, spec, write a spec | `stage.js` `{stage: "spec", agent: "wf-synthesizer", skill: "specifier", task: "Mode: spec. …", detailFile: <spec path>}` | findings path (or user's description) → spec path (repo convention, else `<planDir>/SPEC.md`) | — |
+| **fact-check-doc** | fact-checker (after anything that is not plan/review) | `stage.js` `{stage: "fact-check-doc", agent: "wf-fact-checker", detailFile: "factcheck.json", task: "… write {claims:[{claim, verdict, evidence}]} …"}` | document path | — |
+| **fix** | fix (after fact-check-doc) | `stage.js` `{stage: "fix", agent: "worker", detailFile: "fix-notes.md", task: <fix REFUTED/PARTIAL items in the checked document only; skip DISPUTED/UNVERIFIABLE unless confirmed>}` | document + fact-check paths | — |
 | **plan** | planner, plan it, `planner -> fact-checker -> fix` | workflow `plan-factcheck-fix.js` (fact-check and fix are built in) | `spec`, `planDir` | `angles` (2–4, default 3), `mode: "simple"`, `tier` |
 | **execute** | executor, implement, run the plan | per wave, workflow `execute-step.js` (one step) or `execute-wave.js` (independent steps, clean checkout) per the `executor` skill; ends with **done-check** | `planDir`, `stepFile(s)` | `tier`, `pr` |
 | **review** | code-reviewer, `(code-reviewer -> fact-checker -> fix) xN` | workflow `review-factcheck-fix.js` (fact-check and fix built in; stops at the first clean round) | `repo`, `baseRef` (start of the change), `target` (one line), `reviewDir` = `<stageDir>` | `maxRounds` = N (default 2), `crossExam` (default true; false for "no x-check"), `diversityModel` ("with gpt" → `openai/gpt-6-sol`) |
-| **e2e** | e2e-tester, test it end to end | `worker` child, `skill: "e2e-tester"`; writes `<stageDir>/e2e-report.md` | spec/plan paths, how to reach the running stack | — |
+| **e2e** | e2e-tester, test it end to end | `stage.js` `{stage: "e2e", agent: "worker", skill: "e2e-tester", detailFile: "e2e-report.md"}` | spec/plan paths, how to reach the running stack | — |
 | **done-check** | is it done, (end of execute) | workflow `terminal-gate.js` | `planDir` | `pr` |
 
 Rules:
 - `fact-checker -> fix` directly after **planner** or inside a **review** loop is already part of that workflow: do not add separate stages.
 - `(A -> B) xN early stop K`: the review workflow stops at its first clean round; for K > 1, run it again until K consecutive runs are clean or N is spent.
-- A segment the table does not cover becomes a single-agent stage: pick the closest agent (`worker` writes code, `delegate` general, `scout` read-only), still with the envelope and a stage directory.
+- A segment the table does not cover becomes a `stage.js` run with the closest agent (`worker` writes code, `delegate` general, `wf-fact-checker` verifies). `scout` is only a helper (no envelope): small models reject the schema.
 - Arguments you cannot infer (spec path, plan dir, base ref) come from the user's text, the previous stages' artifacts, or the repo (`git merge-base`, existing `plans/`). Ask only if genuinely ambiguous.
 
 ---
