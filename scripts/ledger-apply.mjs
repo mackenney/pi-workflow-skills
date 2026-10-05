@@ -5,10 +5,11 @@
 //   {"planDir": "/abs", "fromResult": "/abs/<stage>/result.json", "steps"?: ["step-01-x", ...]}   (execute-wave lanes, after merge + re-gate)
 // <ledger> = {step, commit, tick?: true, deferred?: [{gate, owed_by, reason, class?}], proxies_used?: [{gate, proxy_cmd, real_gate}],
 //             decisions_taken?: [..], pending_decisions?: [..]}
+// A deferred/proxy gate that already has a plan-time row updates that row (empty columns only; closed rows untouched).
 // Idempotent: re-applying the same ledger adds nothing. stdout: {ok, applied: {...}, errors: [...]}. Always exits 0.
 import fs from "node:fs";
 import path from "node:path";
-import { mentionsId } from "./lib/ledger.mjs";
+import { mentionsId, OPEN } from "./lib/ledger.mjs";
 
 const done = (o) => { process.stdout.write(JSON.stringify(o) + "\n"); process.exit(0); };
 let task;
@@ -52,18 +53,34 @@ function appendBullet(re, title, text) {
   lines.splice(at, 0, bullet);
   return true;
 }
-function appendRow(re, row, gate, step) {
+// A plan-time row (no "(from <step>)" attribution) is the authority for its gate id and is shared by every step that
+// defers that id; an attributed row belongs to that step only. Existing rows are completed, never reopened or duplicated.
+function upsertDebtRow(re, d, step, reason) {
   const start = headingIdx(re);
-  if (start === -1) { errors.push("missing section for row: " + row); return false; }
+  if (start === -1) { errors.push("missing section for row: " + d.gate); return false; }
   const end = sectionEnd(start);
-  const body = lines.slice(start, end);
-  if (body.some((l) => l.trim().startsWith("|") && mentionsId(l, gate) && l.includes(step))) return false;
-  let at = start + 1; let lastTable = -1;
-  for (let i = start + 1; i < end; i += 1) if (lines[i].trim().startsWith("|")) lastTable = i;
-  if (lastTable === -1) { errors.push("no table in section for row: " + row); return false; }
-  at = lastTable + 1;
-  lines.splice(at, 0, row);
-  return true;
+  let lastTable = -1; let hit = -1;
+  const split = (l) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((c) => c.trim());
+  for (let i = start + 1; i < end; i += 1) {
+    if (!lines[i].trim().startsWith("|")) continue;
+    lastTable = i;
+    const c = split(lines[i]);
+    if (hit !== -1 || c.length !== 5 || !mentionsId(c[0], d.gate)) continue;
+    const from = c[3].match(/\(from ([^)]+)\)/);
+    if (!from || from[1] === step) hit = i;
+  }
+  if (hit === -1) {
+    if (lastTable === -1) { errors.push("no table in section for row: " + d.gate); return false; }
+    lines.splice(lastTable + 1, 0, `| ${cell(d.gate)} | ${cell(d.class)} | ${cell(d.owed_by)} | ${reason} (from ${step}) | open |`);
+    return true;
+  }
+  const c = split(lines[hit]);
+  if (!OPEN.test(c[4])) return false;
+  const want = [null, cell(d.class), cell(d.owed_by), `${reason} (from ${step})`];
+  let changed = false;
+  for (const k of [1, 2, 3]) if ((c[k] === "" || c[k] === "-") && want[k] !== "-") { c[k] = want[k]; changed = true; }
+  if (changed) lines[hit] = "| " + c.join(" | ") + " |";
+  return changed;
 }
 
 for (const L of ledgers) {
@@ -73,13 +90,12 @@ for (const L of ledgers) {
   for (const p of L.pending_decisions ?? []) if (appendBullet(/^##\s+Pending decisions \(human\)\s*$/i, "Pending decisions (human)", `${L.step}: ${String(p).replace(/\r?\n/g, " ")}`)) applied.pending += 1;
   const DEBT = /^##\s+Tech debt\s*\/\s*deferred gates\s*$/i;
   for (const d of L.deferred ?? []) {
-    const row = `| ${cell(d.gate)} | ${cell(d.class)} | ${cell(d.owed_by)} | ${cell(d.reason)} (from ${L.step}) | open |`;
-    if (appendRow(DEBT, row, d.gate, L.step)) applied.deferredRows += 1;
+    if (upsertDebtRow(DEBT, d, L.step, cell(d.reason))) applied.deferredRows += 1;
   }
   for (const p of L.proxies_used ?? []) {
     // A proxy is owed its real gate: same open-row rule as a deferred gate (step-contract Proxy Rule).
-    const row = `| ${cell(p.gate)} | proxy | ${cell(p.owed_by ?? "-")} | proxy \`${cell(p.proxy_cmd)}\` ran instead of \`${cell(p.real_gate)}\` (from ${L.step}) | open |`;
-    if (appendRow(DEBT, row, p.gate, L.step)) applied.deferredRows += 1;
+    const reason = `proxy \`${cell(p.proxy_cmd)}\` ran instead of \`${cell(p.real_gate)}\``;
+    if (upsertDebtRow(DEBT, { gate: p.gate, class: "proxy", owed_by: p.owed_by ?? "-" }, L.step, reason)) applied.deferredRows += 1;
   }
   if (L.tick !== false) {
     const s = headingIdx(/^##\s+Steps\s*$/i);

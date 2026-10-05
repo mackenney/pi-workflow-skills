@@ -70,7 +70,7 @@ The workflows return this envelope themselves and write `brief.json` (+ `result.
 | **execute** | executor, implement, run the plan | per wave, workflow `execute-step.js` (one step) or `execute-wave.js` (independent steps, clean checkout) per the `executor` skill; ends with **done-check** | `planDir`, `stepFile(s)` | `tier`, `pr`, `notes` |
 | **review** | code-reviewer, `(code-reviewer -> fact-checker -> fix) xN` | workflow `review-factcheck-fix.js` (fact-check and fix built in; stops at the first clean round) | `repo`, `baseRef` (start of the change), `target` (one line), `reviewDir` = `<stageDir>` | `maxRounds` = N (default 2), `crossExam` (default true; false for "no x-check"), `diversityModel` ("with gpt" → `openai/gpt-6-sol`), `reviewerModel`, `factcheckModel`, `fixModel`, `fixScope` (see below), `notes` |
 | **e2e** | e2e-tester, test it end to end | `stage.js` `{stage: "e2e", agent: "worker", skill: "e2e-tester", detailFile: "e2e-report.md"}` | spec/plan paths, how to reach the running stack | `model`, `notes` |
-| **done-check** | is it done, (end of execute) | workflow `terminal-gate.js` | `planDir` | `pr` |
+| **done-check** | is it done, (end of execute) | workflow `terminal-gate.js` | `planDir` | `pr` (CI bound to HEAD of `repo`; `expectSha` overrides) |
 
 Rules:
 - `fact-checker -> fix` directly after **planner** or inside a **review** loop is already part of that workflow: do not add separate stages. Words attached to those segments still apply to the workflow: "fact-checker deep" → `factcheckModel`, "fix only trivial" → `fixScope`.

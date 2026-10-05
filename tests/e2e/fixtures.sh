@@ -24,13 +24,19 @@ step() { # id file fn op expect
 # Step $1
 Create \`$2\` at the repo root defining \`$3(a, b)\` returning \`a $4 b\`. Touch no other file.
 ## Acceptance
-- \`python3 -c "from ${2%.py} import $3; assert $3(2,3)==$5"\` passes.
+- \`g-unit-1\`: \`python3 -c "from ${2%.py} import $3; assert $3(2,3)==$5"\` passes.
 MD
-  jq -n --arg s "$1" --arg b "$BASE" --arg c "python3 -c \"from ${2%.py} import $3; assert $3(2,3)==$5\"" --arg r "$3 result" \
-    '{step:$s,tier:"standard",base_commit:$b,gates:[{id:"g-unit-1",class:"unit",cmd:$c}],coverage:[{row:$r,gate:"g-unit-1"}],hard_splits_declared:[]}' > "$P/$1.gates.json"
+  # Every gate class needs a verdict (step contract); the toy has one real gate and declares the rest n/a.
+  jq -n --arg s "$1" --arg b "$BASE" --arg f "$2" --arg c "python3 -c \"from ${2%.py} import $3; assert $3(2,3)==$5\"" --arg r "$3 result" '
+    {step:$s,tier:"standard",base_commit:$b,files:[$f],
+     gates:(["build","static","integ","e2e-smoke","regress"] | map({id:("g-"+.+"-1"),class:.,result:"n/a",reason:"toy repo has no \(.) gate"})
+            + [{id:"g-unit-1",class:"unit",cmd:$c}]),
+     coverage:[{row:$r,gate:"g-unit-1"}],hard_splits_declared:[]}' > "$P/$1.gates.json"
+  jq -s '{id:.[0].step,tier:.[0].tier,files:.[0].files,gates:.[0].gates,coverage:.[0].coverage,hard_splits_declared:[]}' "$P/$1.gates.json" > "$P/$1.plan-entry.json"
 }
 step step-01-add add.py add + 5
 step step-02-mul mul.py mul '*' 6
+jq -s '{steps:.}' "$P"/step-0*.plan-entry.json > "$P/plan.json" && rm "$P"/*.plan-entry.json
 cat > "$P/PROGRESS.md" <<'MD'
 # Progress
 

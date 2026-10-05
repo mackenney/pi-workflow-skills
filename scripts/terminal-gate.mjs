@@ -4,6 +4,7 @@
 // Fail closed (parser: lib/ledger.mjs): a missing ledger or section, an empty or unchecked "## Steps" checklist,
 // any debt-table row whose Status (last column) is not `discharged <commit>` or
 // `waived by <name> <YYYY-MM-DD>: <reason>`, any non-table line inside a debt section, and CI that is not green.
+// With `pr` and no `expectSha`, CI is bound to `git rev-parse HEAD` in repo (default planDir); unresolvable HEAD fails closed.
 // No significance judgement. Grammar: skills/step-contract/SKILL.md. Always exits 0.
 import fs from "node:fs";
 import path from "node:path";
@@ -24,12 +25,21 @@ const openDeferred = L.rows.deferred.filter((r) => !isClosed(r.status));
 const openDisabled = L.rows.disabled.filter((r) => !isClosed(r.status));
 
 let ci;
+const ciErrors = [];
 if (task.pr !== undefined) {
+  // Without a pin, a green PR head for an older commit would pass the gate; bind to the local HEAD unless told otherwise.
+  let expectSha = task.expectSha;
+  if (!expectSha) {
+    const g = spawnSync("git", ["-C", task.repo || task.planDir, "rev-parse", "HEAD"], { encoding: "utf8" });
+    expectSha = g.status === 0 ? g.stdout.trim() : "";
+    if (!expectSha) ciErrors.push("cannot resolve HEAD in " + (task.repo || task.planDir) + " to bind CI (pass expectSha or repo)");
+  }
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const r = spawnSync(path.join(here, "ci-gate.sh"),
-    { input: JSON.stringify({ pr: task.pr, repo: task.repo, waitSeconds: task.waitSeconds ?? 0, expectSha: task.expectSha }), encoding: "utf8" });
-  try { ci = JSON.parse(r.stdout); } catch { ci = { state: "unknown", error: "ci-gate output unparseable" }; }
+  const r = !expectSha ? {} : spawnSync(path.join(here, "ci-gate.sh"),
+    { input: JSON.stringify({ pr: task.pr, repo: task.repo, waitSeconds: task.waitSeconds ?? 0, expectSha: expectSha || undefined }), encoding: "utf8" });
+  if (!expectSha) ci = { state: "unknown", error: "no commit to bind CI to" };
+  else try { ci = JSON.parse(r.stdout); } catch { ci = { state: "unknown", error: "ci-gate output unparseable" }; }
 }
 
-const ok = L.errors.length === 0 && openSteps.length === 0 && openDeferred.length === 0 && openDisabled.length === 0 && (!ci || ci.state === "green");
-done({ ok, ledger: file, openSteps, openDeferred, openDisabled, errors: L.errors, ...(ci ? { ci } : {}) });
+const ok = L.errors.length === 0 && ciErrors.length === 0 && openSteps.length === 0 && openDeferred.length === 0 && openDisabled.length === 0 && (!ci || ci.state === "green");
+done({ ok, ledger: file, openSteps, openDeferred, openDisabled, errors: [...L.errors, ...ciErrors], ...(ci ? { ci } : {}) });

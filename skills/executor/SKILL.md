@@ -107,7 +107,7 @@ Escalate immediately when: a wave has 3+ failing steps with no common fix; a cha
 
 ## Terminal Gate
 
-The plan is complete **only** when `terminal-gate.js` returns `status: "done"` (pass `args.pr` when a PR exists). Otherwise act on its actionables: `fix` (unfinished step, malformed ledger, red CI) is your work; `decision` (an open ledger row) goes to the human to discharge or waive. Do not report completion, do not soften the wording, do not write waivers yourself.
+The plan is complete **only** when `terminal-gate.js` returns `status: "done"` (pass `args.pr` when a PR exists; CI is then bound to `git rev-parse HEAD` in `args.repo` or the plan dir, so pass `repo` if the plan dir is outside the work repo, or `expectSha` to pin another commit). Otherwise act on its actionables: `fix` (unfinished step, malformed ledger, red CI) is your work; `decision` (an open ledger row) goes to the human to discharge or waive. Do not report completion, do not soften the wording, do not write waivers yourself.
 
 ---
 
