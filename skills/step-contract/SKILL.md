@@ -14,7 +14,7 @@ agent body conflict with this file on any of these definitions, this file wins.
 
 ## Gate classes
 
-Six classes (RECOMMENDATIONS-v2 naming). `real: true|proxy` is an **attribute** on any gate, not a
+Six classes (RECOMMENDATIONS-v2 naming). `proxy: true` (absent/false = a real, non-proxy gate) is an **attribute** on any gate, not a
 separate class — a G-build or G-e2e-smoke gate can be `proxy` only when explicitly declared, with
 the real gate named and owed (see Proxy Rule).
 
@@ -28,7 +28,7 @@ the real gate named and owed (see Proxy Rule).
 | **G-integ** | Full suite, cross-subsystem invariants, cold bake, measurements — always at plan/integration level, never skippable to a step | full suite; cold bake; boot every profile | 30+ min |
 
 A build-artifact gate (image, binary, wheel, bundle) is a `G-build` or `G-e2e-smoke` gate with
-`real: true` required — see First-Artifact Rule. `N/A: <reason>` is a valid verdict for a class
+a non-proxy gate (`proxy` absent/false) required — see First-Artifact Rule. `N/A: <reason>` is a valid verdict for a class
 that does not apply to a step; an *omitted* class is a planning defect, not a valid absence.
 
 ## Coverage matrix (primary — this is what actually catches configuration escapes)
@@ -73,7 +73,7 @@ manifest, lockfile, bundle spec) must run a real, non-proxy build in that same s
 deferred to the end. Grounding: three consecutive epochs verified Dockerfile changes with
 `bake --print` only, and a 15-step plan's first real bake — run at step 15 — immediately
 surfaced two P0 defects no earlier gate could see. `validate-plan.sh` rejects a plan whose first
-artifact-touching step lacks a `real: true` G-build/G-e2e-smoke gate.
+artifact-touching step lacks a non-proxy (`proxy` absent/false) G-build/G-e2e-smoke gate.
 
 ## Hard splits — atomic at every tier, regardless of executor strength
 
@@ -118,7 +118,8 @@ cross-checks the two do not disagree.
     { "id": "g-unit-1", "class": "unit", "cmd": "uv run pytest packages/mcp_compose/tests/test_loader.py::test_rejects_unknown_version -q", "timeoutMs": 120000 },
     { "id": "g-e2e-smoke-1", "class": "e2e-smoke", "cmd": "uv run gym-capabilities validate samples/descriptor.json", "timeoutMs": 60000 },
     { "id": "g-regress-1", "class": "regress", "cmd": "uv run pytest packages/mcp_compose -q", "timeoutMs": 300000 },
-    { "id": "g-build-2", "class": "build", "result": "n/a", "reason": "no artifact definition touched" }
+    { "id": "g-build-2", "class": "build", "result": "n/a", "reason": "no artifact definition touched" },
+    { "id": "g-integ-1", "class": "integ", "result": "n/a", "reason": "integration step owns it" }
   ],
   "coverage": [
     { "row": "loader version >= 2 (non-default)", "gate": "g-unit-1" }
@@ -129,7 +130,7 @@ cross-checks the two do not disagree.
 
 A sidecar may pre-set only `"result": "n/a"` (with `reason`) or `"result": "deferred"` (with `owed_by`, the step that runs the real gate, plus an `open` row in "Tech debt / deferred gates" naming the gate id). Workers and reviewers never edit the step file, the sidecar, plan.json or PROGRESS.md: a gate that cannot pass with a correct implementation is reported (FAIL + `pending_decisions`), not rewritten. Every other `gates[]` entry with a `cmd` becomes an
 `acceptance.verify[]` item the runtime executes; the worker's own claims are evidence, not
-verdict. `timeoutMs` defaults to 120000 (the runtime's own default) but real builds must set it
+verdict. The workflows set `timeoutMs` to 900000 when omitted, but real builds must set it
 explicitly higher.
 
 ## STEP-VERDICT (worker `outputSchema`)
@@ -175,7 +176,7 @@ The plan directory's ledger file (`PROGRESS.md` by default) is authoritative —
 
 ```markdown
 ## Executor Tier
-<fast | standard | deep | frontier>
+<fast | standard | deep>   (steps are sized <= deep)
 
 ## Decisions taken
 - <one line, with commit or step reference>

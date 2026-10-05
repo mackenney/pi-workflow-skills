@@ -90,7 +90,7 @@ const workerTask = [
 //    If the fast lane is still disabled, this launch fails with an unknown-agent error: enable wf-flash-worker for a measured plan first.
 const ACCEPTANCE = {
   level: "verified",
-  criteria: ["Every non-n/a gate in the sidecar passes", "Every coverage-matrix row is exercised by a ran gate", "No undeclared proxy; no scope outside the step"],
+  criteria: ["Every runnable gate (not n/a, not deferred) in the sidecar passes", "Every coverage-matrix row is exercised by a ran gate", "No undeclared proxy; no scope outside the step"],
   evidence: ["changed-files", "commands-run", "residual-risks", "no-staged-files", "diff-summary"],
   verify,
   report: "on"

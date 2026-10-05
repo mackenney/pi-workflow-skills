@@ -101,7 +101,7 @@ The simple-mode synthesizer receives the same inputs as normal-mode planners (pr
 
 Each planner attacks the problem from a different angle. They work independently and write to separate plan files. `workflows/plan-factcheck-fix.js` dispatches these via `runs.all` internally when `args.angles` is set; you do not call `subagent(...)` directly for this.
 
-**Context mode:** Default is fresh — investigation findings, the assigned angle, and the output path are passed explicitly in the task string. Use `context: "fork"` when the parent session has done substantial preparation (architecture exploration, deep investigation synthesis) that all planners need as shared baseline and would be expensive to re-serialize into every task. Do not fork when planner angles are designed to be independent and unbiased — inherited session history can contaminate divergent planning.
+**Context mode:** Default is fresh — investigation findings, the assigned angle, and the output path are passed explicitly in the task string. The workflow always launches planners fresh (no fork), which also keeps divergent angles independent and unbiased.
 
 **Standard angles to assign:**
 
@@ -123,7 +123,7 @@ Tell each planner which angles the other planners are covering so they don't dup
 
 After planners complete, the workflow dispatches a single `wf-synthesizer` run (plan mode) with all plan files as inputs, under the `validate-plan.sh` typed gate; failed validation triggers a fresh re-synthesis round (never `resume` — typed gates are rejected on resume) carrying the validator's `errors[]`, up to `args.maxSynthRounds`.
 
-**Context mode:** Fork the synthesizer when the parent session holds significant context it needs to reconcile competing plans correctly (e.g., architectural constraints established during investigation). Use fresh when all required context is captured in the plan files themselves.
+**Context mode:** The synthesizer is always launched fresh; everything it needs must be captured in the plan files themselves.
 
 The synthesizer produces the final PROGRESS.md, all step files, their `*.gates.json` sidecars, and the machine-readable `plan.json` index `validate-plan.sh` checks.
 
@@ -276,7 +276,7 @@ In Progress | Blocked | Complete
 <1-2 sentence description of what this plan achieves>
 
 ## Executor Tier
-<fast | standard | deep | frontier> — steps in this plan are sized for this tier (see "Executor Tier and Step Sizing" above).
+<fast | standard | deep> — steps in this plan are sized for this tier, never above deep (see "Executor Tier and Step Sizing" above).
 
 ## Open Decisions
 <Any unresolved choices requiring user input — if none, omit>
@@ -321,7 +321,7 @@ In Progress | Blocked | Complete
 6. Blockers: stop and report to user with full context
 
 ## Subagent Contract
-Dispatched via `workflows/execute-step.js` / `execute-wave.js`, not ad-hoc task strings — see the `executor` skill. Workers (`wf-structural-worker`, `wf-flash-worker`, or the builtin `worker` with per-run `skill: "step-contract"`) run every sidecar gate, commit `step-NN: <name>`, and return a typed STEP-VERDICT. Reviewers (`wf-step-reviewer`) re-run the gates independently and return a typed REVIEW-VERDICT — never prose PASS/FAIL. The parent applies the returned `ledger` object to this file's ledger sections before dispatching the next step.
+Dispatched via `workflows/execute-step.js` / `execute-wave.js`, not ad-hoc task strings — see the `executor` skill. Workers (`wf-structural-worker`, `wf-flash-worker`, or the builtin `worker` with per-run `skill: "step-contract"`) run every sidecar gate, commit `step-NN: <name>`, and return a typed STEP-VERDICT. Reviewers (`wf-step-reviewer`) re-run the gates independently and return a typed REVIEW-VERDICT — never prose PASS/FAIL. `execute-step.js` applies the typed verdict through `ledger-apply`; the parent never edits ledger rows.
 
 ## Steps
 
@@ -430,7 +430,7 @@ If this step needs to be reverted: `git revert <describe what commit to revert>`
 
 ## Model Guide
 
-Tiers are never named in this skill or in task strings — they are bound by the `tier:` frontmatter on `wf-planner`/`wf-synthesizer` and `scripts/generate-tier-overrides.mjs`, which renders `~/.pi/agent/AGENTS.md`'s Model Tiers table into `subagents.agentOverrides`. This skill only says which *role agent* does the work.
+Models are never named in this skill or in task strings — they are bound by the `tier:` frontmatter on `wf-planner`/`wf-synthesizer` and `scripts/generate-tier-overrides.mjs`, which renders `~/.pi/agent/AGENTS.md`'s Model Tiers table into `subagents.agentOverrides`. This skill only says which *role agent* does the work.
 
 | Role | Agent | Tier | Rationale |
 |------|-------|------|-----------|

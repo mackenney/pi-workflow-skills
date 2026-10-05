@@ -7,7 +7,8 @@
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 const run = await safe(runs.run("terminal-gate", {
   agent: "wf-host-command", label: "Terminal gate " + args.planDir,
-  task: JSON.stringify({ script: "terminal-gate", planDir: args.planDir, ledgerFile: args.ledgerFile, pr: args.pr, repo: args.repo, waitSeconds: args.waitSeconds ?? 0, expectSha: args.expectSha })
+  task: JSON.stringify({ script: "terminal-gate", planDir: args.planDir, ledgerFile: args.ledgerFile, pr: args.pr, repo: args.repo, waitSeconds: args.waitSeconds ?? 0, expectSha: args.expectSha }),
+  timeoutMs: 2100000
 }));
 let result;
 try { result = JSON.parse(run.output); } catch (e) { result = { ok: false, errors: ["unparseable terminal-gate output: " + (run.error ?? e.message)] }; }

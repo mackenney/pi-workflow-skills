@@ -5,7 +5,7 @@
 // wf-host-command's 64 KiB stdout cap. Always exits 0; errors are state "unknown".
 // Fail closed: green only when there is at least one check and every bucket is `pass` or `skipping`;
 // an unrecognised bucket is "unknown"; zero checks is "none". With expectSha, a PR head that is not
-// that commit (or a descendant of it, prefix match on the sha) is "stale": its checks say nothing about the step.
+// that commit (compared by sha prefix; a descendant head is therefore also stale) is "stale": its checks say nothing about the step.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 
@@ -24,6 +24,7 @@ if (task.expectSha) {
   try { head = JSON.parse(r.stdout || "").headRefOid; } catch { head = undefined; }
   if (!head) done({ state: "unknown", error: "cannot read PR head sha: " + (r.stderr || r.stdout || "").trim().slice(0, 300) });
   const want = String(task.expectSha).toLowerCase();
+  if (!/^[0-9a-f]{7,40}$/.test(want)) done({ state: "unknown", error: "expectSha must be 7-40 hex chars" });
   if (!head.toLowerCase().startsWith(want) && !want.startsWith(head.toLowerCase())) {
     done({ state: "stale", headSha: head, expectSha: task.expectSha, note: "PR head is not the step commit; push it before reading CI" });
   }

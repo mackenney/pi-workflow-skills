@@ -43,7 +43,7 @@ PROGRESS.md must contain `## Tech debt / deferred gates` and `## Disabled/soften
 
 ### 4. Surface repo conventions
 
-Read `AGENTS.md`/`CLAUDE.md`/`.cursorrules` at the project root. If a sidecar gate command conflicts with a convention (bare `pytest` vs `uv run pytest`), fix the sidecar before dispatch and record it under "Decisions taken".
+Read `AGENTS.md`/`CLAUDE.md`/`.cursorrules` at the project root. If a sidecar gate command conflicts with a convention (bare `pytest` vs `uv run pytest`), fix the sidecar and plan.json before dispatch, re-run `validate-plan.sh`, and record the decision via `ledger-apply` `decisions_taken`.
 
 ### 5. Clean tree
 

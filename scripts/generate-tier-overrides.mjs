@@ -232,7 +232,7 @@ function main() {
   const modelScope = settings.subagents?.modelScope;
   const enabledModels = settings.enabledModels ?? [];
 
-  const statePath = path.join(HOME_AGENT_DIR, "tier-overrides.state.json");
+  const statePath = path.join(path.dirname(opts.settings), "tier-overrides.state.json");
   const state = loadJsonOr(statePath, { appliedAt: null, applied: {}, overrides: {} });
 
   // Compose --override-tier args (this run) with persisted overrides, then apply --clear-override.
@@ -378,6 +378,7 @@ function main() {
     const indent = detectIndent(settingsRaw);
     const tmpPath = `${opts.settings}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(newSettings, null, indent) + "\n");
+    fs.chmodSync(tmpPath, fs.statSync(opts.settings).mode & 0o777);
     fs.renameSync(tmpPath, opts.settings);
 
     const newState = { appliedAt: nowIso, applied: { ...state.applied }, overrides: overridesTiers };

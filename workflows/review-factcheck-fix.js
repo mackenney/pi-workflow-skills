@@ -4,7 +4,7 @@
 // Returns the stage envelope; full result in <stageDir>/result.json.
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Models are NOT named here except the opt-in diversityModel lane; modelScope rejects any value not
-// allow-listed for wf-code-reviewer, so an unlisted model fails the launch rather than running silently.
+// in the global modelScope.allow, so an unlisted model fails the launch rather than running silently.
 // Gate commands run through the host shell, so the env override expands there (isolated test installs set it).
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
@@ -107,7 +107,7 @@ for (let round = 0; round < maxRounds; round += 1) {
            xexamPaths.length ? "Cross-exam files: " + xexamPaths.join(", ") : "",
            "Write JSON to your output path, exactly: {\"blockers\":[{\"title\",\"file\",\"line\",\"evidence\",\"fix\"}],\"important\":[...same shape],\"refuted\":[{\"title\",\"reason\"}]}. blockers = P0 (must fix before merge); important = P1 only; P2/nits/hygiene go in an optional \"nits\" array, never in important (the loop stops when blockers and important are both empty); refuted = angle findings you rejected with evidence."].filter(Boolean).join("\n"),
     gate: {
-      command: SKILLS + "/scripts/classify-review.sh " + synthPath,
+      command: SKILLS + "/scripts/classify-review.sh '" + synthPath + "'",
       output: "json", schema: REVIEW_CLASS_SCHEMA, timeoutMs: 60000
     }
   }));
@@ -130,7 +130,7 @@ for (let round = 0; round < maxRounds; round += 1) {
     task: "Fact-check the review synthesis at " + synthPath + " (target: " + args.target + (args.repo ? ", repo " + args.repo : "") +
           "). One claim per blocker/important finding: is the defect real at the cited file:line? Write {claims:[{claim, verdict, evidence}]} to your output path.",
     gate: {
-      command: SKILLS + "/scripts/classify-factcheck.sh " + fcPath,
+      command: SKILLS + "/scripts/classify-factcheck.sh '" + fcPath + "'",
       output: "json", schema: FC_CLASS_SCHEMA, timeoutMs: 60000
     }
   }));

@@ -55,7 +55,7 @@ while (true) {
         ...(simple ? [] : angleOutputs.filter((a) => a.ok).map((a) => "Angle " + a.angle + " output: " + a.output)),
         "Spec/investigation: " + args.spec,
         "Executor tier: " + tier,
-        "Write the unified plan (step files + *.gates.json sidecars) under " + args.planDir + "/, and a single machine-readable index at " + planOutputPath + " (schema: {steps:[{id,tier,files,gates,coverage,hard_splits_declared}]})."
+        "Write the unified plan (step files + *.gates.json sidecars) under " + args.planDir + "/, and a single machine-readable index at " + planOutputPath + " (schema: {steps:[{id,tier,files,gates,coverage,hard_splits_declared}]}), and PROGRESS.md (step-contract ledger sections + ## Steps checklist)."
       ].join("\n")
     : [
         "Mode: plan. Fix round " + round + ".",
@@ -73,7 +73,7 @@ while (true) {
     // Fix rounds rewrite it in place (task text); the gate re-validates that path either way.
     ...(round === 0 ? { output: planOutputPath } : {}),
     gate: {
-      command: SKILLS + "/scripts/validate-plan.sh " + planOutputPath,
+      command: SKILLS + "/scripts/validate-plan.sh '" + planOutputPath + "'",
       output: "json", schema: VALIDATE_SCHEMA, timeoutMs: 120000
     }
   }));
@@ -96,7 +96,7 @@ let fc = await safe(runs.run("factcheck-0", {
   agent: "wf-fact-checker", label: "Fact-check plan", output: factcheckPath,
   task: "Fact-check the plan at " + planOutputPath + " against the repo: verify every gate command exists and is runnable, and every cited fact is real. Write a JSON report to your output path: {claims:[{claim, verdict: CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE, evidence}]}.",
   gate: {
-    command: SKILLS + "/scripts/classify-factcheck.sh " + factcheckPath,
+    command: SKILLS + "/scripts/classify-factcheck.sh '" + factcheckPath + "'",
     output: "json", schema: CLASSIFY_SCHEMA, timeoutMs: 60000
   }
 }));
@@ -110,9 +110,9 @@ if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
   // The fix pass rewrites plan.json, step files and sidecars, so it runs under the same validate-plan gate as synthesis.
   const fix = await safe(runs.run("plan-fix-0", {
     agent: "worker", skill: "step-contract", label: "Fix plan per fact-check",
-    task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars/PROGRESS.md) per the REFUTED/PARTIAL/DISPUTED claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + "). Keep plan.json and every sidecar identical where they overlap.",
+    task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars/PROGRESS.md) per the REFUTED/PARTIAL claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + "). Keep plan.json and every sidecar identical where they overlap.",
     gate: {
-      command: SKILLS + "/scripts/validate-plan.sh " + planOutputPath,
+      command: SKILLS + "/scripts/validate-plan.sh '" + planOutputPath + "'",
       output: "json", schema: VALIDATE_SCHEMA, timeoutMs: 120000
     }
   }));
@@ -124,7 +124,7 @@ if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
     agent: "wf-fact-checker", label: "Re-fact-check plan", output: factcheckPath,
     task: "Re-verify the plan at " + planOutputPath + " after fixes. Same report schema.",
     gate: {
-      command: SKILLS + "/scripts/classify-factcheck.sh " + factcheckPath,
+      command: SKILLS + "/scripts/classify-factcheck.sh '" + factcheckPath + "'",
       output: "json", schema: CLASSIFY_SCHEMA, timeoutMs: 60000
     }
   }));
@@ -147,6 +147,7 @@ const actionables = [];
 for (const p of result.pendingDecisions ?? []) actionables.push({ what: p, kind: "decision", ref: result.factcheckPath });
 if (result.state === "PASS") actionables.push({ what: "check PROGRESS.md Open Decisions before executing", kind: "info", ref: args.planDir + "/PROGRESS.md#open-decisions" });
 else actionables.push({ what: (result.stage ?? "plan") + ": " + (result.error ?? (result.validation?.errors ?? []).slice(0, 3).join("; ") ?? "see result.json"), kind: "fix", ref: stageDir + "/result.json" });
+for (const a of (result.angles ?? []).filter((a) => !a.ok)) actionables.push({ what: "plan angle " + a.angle + " failed: " + a.error, kind: "info", ref: stageDir + "/result.json" });
 const fcC = result.factcheckClass;
 const summary = result.state === "PASS"
   ? "plan PASS: validate-plan ok; fact-check " + (fcC ? fcC.total + " claims, " + fcC.refuted + " refuted, " + fcC.partial + " partial, " + fcC.disputed + " disputed" : "n/a") + "."

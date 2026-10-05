@@ -91,7 +91,7 @@ const workers = await runs.all(contracts.map((c, i) => {
     outputSchema: STEP_VERDICT,
     acceptance: {
       level: "verified",
-      criteria: ["Every non-n/a gate in the sidecar passes", "No undeclared proxy; no scope outside the step"],
+      criteria: ["Every runnable gate (not n/a, not deferred) in the sidecar passes", "No undeclared proxy; no scope outside the step"],
       evidence: ["changed-files", "commands-run", "residual-risks", "no-staged-files", "diff-summary"],
       verify: c.gates.filter((g) => g.cmd && g.result !== "n/a" && g.result !== "deferred").map((g) => ({ id: g.id, command: g.cmd, timeoutMs: g.timeoutMs ?? 900000 })),
       report: "on"
@@ -106,7 +106,7 @@ const reviews = passing.length === 0 ? [] : await runs.all(passing.map(({ w, i }
   key: "review-" + keyOf(args.stepFiles[i]), agent: "wf-step-reviewer", label: "Review " + contracts[i].step,
   task: [
     "Review plan step " + contracts[i].step + ", commit " + w.structuredOutput.commit + " (on a lane branch, not checked out here).",
-    "Inspect with `git show`/`git diff <base>..<commit>`. To re-run gates: `git worktree add --detach /tmp/wf-review-" + keyOf(args.stepFiles[i]) + " " + w.structuredOutput.commit + "`, run them there, then `git worktree remove --force` it. Do not edit anything.",
+    "Inspect with `git show`/`git diff <base>..<commit>`. To re-run gates: `git worktree add --detach " + stageDir + "/review-" + keyOf(args.stepFiles[i]) + " " + w.structuredOutput.commit + "`, run them there, then `git worktree remove --force` it. Do not edit anything.",
     "Step file: " + args.stepFiles[i], "Ledger: " + ledgerPath, "Base commit: " + (args.baseCommit ?? contracts[i].base_commit ?? "HEAD"),
     "Worker STEP-VERDICT JSON:", JSON.stringify(w.structuredOutput)
   ].join("\n"),

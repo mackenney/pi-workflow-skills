@@ -52,7 +52,7 @@ Default: cross-examination runs. Skip it for small diffs, low-stakes changes, or
 
 Dispatch instructions below state intent, not call syntax: how many children, what role, what context. `workflows/review-factcheck-fix.js` owns the actual dispatch (`wf-code-reviewer` angles → optional cross-exam → synthesis under a typed `classify-review.sh` gate → `wf-fact-checker` → fix loop); `args.diversityModel` opts one angle into a cross-vendor model allow-listed by `modelScope`. Model binding lives in agent `tier:` frontmatter, not here.
 
-Reviewers, cross-exam agents, and synthesis are each one batch — children run in parallel within a batch, and every child starts fresh, never forked or sharing session history. Competitive review depends on that independence.
+Reviewers, cross-exam agents, and synthesis are each one batch — children run in parallel within a batch, and angle and synthesis children start fresh; cross-exam resumes each angle's own session so it keeps its own context, never another reviewer's. Competitive review depends on that independence.
 
 ## Multi-Agent Review Architecture
 
