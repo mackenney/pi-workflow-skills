@@ -1,0 +1,1 @@
+# Tests in this directory are sourced by tests/scripts.test.sh (helpers: check, $S, $T, $ROOT, pass/fail counters).

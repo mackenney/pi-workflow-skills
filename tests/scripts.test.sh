@@ -240,5 +240,8 @@ for wf in "$ROOT"/workflows/*.js; do
   if [ -z "$missing" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: $(basename "$wf") reads args not in ALLOWED_ARGS: $missing"; fi
 done
 
+# Per-topic test files (sourced, so they share check/pass/fail, $S, $T and $ROOT); lets parallel lanes add tests without conflicts.
+for f in "$ROOT"/tests/scripts.d/*.sh; do [ -f "$f" ] && source "$f"; done
+
 echo "scripts.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
