@@ -127,7 +127,7 @@ cross-checks the two do not disagree.
 }
 ```
 
-A sidecar may pre-set only `"result": "n/a"` (with `reason`) or `"result": "deferred"` (with `owed_by`, the step that runs the real gate, plus an `open` row in "Tech debt / deferred gates" naming the gate id). Every other `gates[]` entry with a `cmd` becomes an
+A sidecar may pre-set only `"result": "n/a"` (with `reason`) or `"result": "deferred"` (with `owed_by`, the step that runs the real gate, plus an `open` row in "Tech debt / deferred gates" naming the gate id). Workers and reviewers never edit the step file, the sidecar, plan.json or PROGRESS.md: a gate that cannot pass with a correct implementation is reported (FAIL + `pending_decisions`), not rewritten. Every other `gates[]` entry with a `cmd` becomes an
 `acceptance.verify[]` item the runtime executes; the worker's own claims are evidence, not
 verdict. `timeoutMs` defaults to 120000 (the runtime's own default) but real builds must set it
 explicitly higher.

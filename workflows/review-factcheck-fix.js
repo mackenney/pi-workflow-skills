@@ -6,6 +6,9 @@
 // Models are NOT named here except the opt-in diversityModel lane; modelScope rejects any value not
 // allow-listed for wf-code-reviewer, so an unlisted model fails the launch rather than running silently.
 // Gate commands run through the host shell, so the env override expands there (isolated test installs set it).
+// A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
+// failed result so every exit path reports (runs.all already returns per-child failures).
+const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 const SKILLS = "${PI_WORKFLOW_SKILLS_DIR:-/home/ignacio/pr/pi-workflow-skills}";
 
 const DEFAULT_ANGLES = ["correctness", "security-and-failure-modes", "tests-and-gate-coverage"];
@@ -97,7 +100,7 @@ for (let round = 0; round < maxRounds; round += 1) {
 
   // 3. Synthesis under the classify-review typed gate. Fresh launch (typed gates are rejected on resume).
   const synthPath = dir + "/synthesis.json";
-  const synth = await runs.run("r" + round + "-synth", {
+  const synth = await safe(runs.run("r" + round + "-synth", {
     agent: "wf-code-reviewer", label: "Review synthesis r" + round, output: synthPath,
     task: ["mode: \"synthesis\"", "Target: " + args.target, repoLine, rangeLine,
            "Angle findings files: " + anglePaths.join(", "),
@@ -107,7 +110,7 @@ for (let round = 0; round < maxRounds; round += 1) {
       command: SKILLS + "/scripts/classify-review.sh " + synthPath,
       output: "json", schema: REVIEW_CLASS_SCHEMA, timeoutMs: 60000
     }
-  });
+  }));
   const reviewClass = synth.structuredOutput;
   if (!synth.ok || !reviewClass || reviewClass.error) {
     { result = { state: "FAIL", stage: "synth", round, reviewClass, error: synth.error, rounds }; break main; }
@@ -122,7 +125,7 @@ for (let round = 0; round < maxRounds; round += 1) {
 
   // 4. Fact-check the synthesis so the fix pass only acts on verified findings.
   const fcPath = dir + "/factcheck.json";
-  const fc = await runs.run("r" + round + "-factcheck", {
+  const fc = await safe(runs.run("r" + round + "-factcheck", {
     agent: "wf-fact-checker", label: "Fact-check review r" + round, output: fcPath,
     task: "Fact-check the review synthesis at " + synthPath + " (target: " + args.target + (args.repo ? ", repo " + args.repo : "") +
           "). One claim per blocker/important finding: is the defect real at the cited file:line? Write {claims:[{claim, verdict, evidence}]} to your output path.",
@@ -130,7 +133,7 @@ for (let round = 0; round < maxRounds; round += 1) {
       command: SKILLS + "/scripts/classify-factcheck.sh " + fcPath,
       output: "json", schema: FC_CLASS_SCHEMA, timeoutMs: 60000
     }
-  });
+  }));
   const fcClass = fc.structuredOutput;
 
   const record = { round, synthPath, fcPath, reviewClass, fcClass, diversityModel: args.diversityModel ?? null };
@@ -140,13 +143,13 @@ for (let round = 0; round < maxRounds; round += 1) {
     break;
   }
   // 5. Fix pass: builtin worker applies only findings the fact-check did not refute.
-  const fix = await runs.run("r" + round + "-fix", {
+  const fix = await safe(runs.run("r" + round + "-fix", {
     agent: "worker", skill: "step-contract", label: "Fix review findings r" + round,
     task: ["Target: " + args.target, repoLine, rangeLine,
            "Apply fixes for every blocker and important finding in " + synthPath + ".",
            "Skip any finding the fact-check at " + fcPath + " marks REFUTED; for DISPUTED/UNVERIFIABLE ones, fix only if you can confirm the defect yourself.",
            "Re-run the repo's relevant tests/lint after fixing and commit with an imperative message. Report what you fixed and skipped."].filter(Boolean).join("\n")
-  });
+  }));
   record.fix = { ok: fix.ok, runId: fix.runId, error: fix.error };
   if (!fix.ok) {
     final = { state: "FAIL", round, stage: "fix", error: fix.error };
@@ -178,6 +181,6 @@ const rc = lastR?.reviewClass;
 const summary = "review " + result.state + " after " + (result.rounds?.length ?? 0) + " round(s)" + (rc ? "; last synthesis: " + rc.blockers + " blockers, " + rc.important + " important" : "") + ".";
 const status = result.state === "PASS" || result.state === "FIXED_UNREVIEWED" ? ((result.pendingDecisions ?? []).length ? "needs-decision" : "done") : result.state === "BLOCKED" ? "blocked" : "failed";
 const envelope = { stage: "review", status, summary, actionables, artifacts: { primary: lastR?.synthPath ?? stageDir + "/result.json", details: [stageDir + "/result.json"] } };
-await runs.run("persist", { agent: "wf-host-command", label: "Persist review result",
-  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) });
+await safe(runs.run("persist", { agent: "wf-host-command", label: "Persist review result",
+  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) }));
 return envelope;

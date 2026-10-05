@@ -5,6 +5,9 @@
 // Ledger: once the review passes, this workflow applies the typed verdict to <planDir>/<ledgerFile> through the
 // ledger-apply host script (step-contract grammar). Neither the parent nor a model edits ledger rows.
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
+// A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
+// failed result so every exit path reports (runs.all already returns per-child failures).
+const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 
 // Tier -> agent. Models are NOT named here; each agent's model comes from the generated agentOverrides (§3.2).
 const WORKER_BY_TIER = {
@@ -55,7 +58,7 @@ let result = null;
 main: {
 
 // 1. Load the planner-authored gate sidecar mechanically (typed step; no LLM transcription).
-const loaded = await runs.run("gates", { agent: "wf-host-command", label: "Load step gates", task: JSON.stringify({ script: "step-loader", stepFile: args.stepFile }) });
+const loaded = await safe(runs.run("gates", { agent: "wf-host-command", label: "Load step gates", task: JSON.stringify({ script: "step-loader", stepFile: args.stepFile }) }));
 if (!loaded.ok) { result = { state: "BLOCKED", reason: "gate sidecar unreadable", error: loaded.error }; break main; }
 let contract = null; // { step, tier, base_commit?, gates:[{id,class,cmd,timeoutMs,proxy?,result?}], coverage:[...], hard_splits_declared:[...] }
 try { contract = JSON.parse(loaded.output); } catch (e) { contract = null; }
@@ -77,6 +80,9 @@ const workerTask = [
   "Base commit for fails-before checks: " + (args.baseCommit ?? contract.base_commit ?? "HEAD"),
   // Without this the worker leaves changes uncommitted ("parent controls commits") and burns a fix round.
   "Commit your work (scoped to the step's files) and report the sha in STEP-VERDICT.commit. Do not edit the ledger.",
+  // Observed 2026-10-05: a worker "fixed" an impossible gate by editing the sidecar. The runtime still failed it (verify is
+  // loaded before launch), but the plan must stay untouched: a wrong gate is the human's call.
+  "Never edit the step file, its gate sidecar, plan.json or PROGRESS.md. If a gate is wrong or cannot pass with a correct implementation, return FAIL and explain it under pending_decisions.",
   "Executor tier: " + tier + ". Follow the step-contract skill exactly."
 ].join("\n");
 
@@ -89,12 +95,12 @@ const ACCEPTANCE = {
   verify,
   report: "on"
 };
-let impl = await runs.run("implement", {
+let impl = await safe(runs.run("implement", {
   agent: workerAgent, label: "Implement " + contract.step, task: workerTask,
   ...(lane.skill ? { skill: lane.skill } : {}),
   outputSchema: STEP_VERDICT,
   acceptance: ACCEPTANCE
-});
+}));
 let verdict = impl.structuredOutput;
 if (impl.ok && verdict && verdict.verdict === "PASS" && !verdict.commit) verdict = { ...verdict, verdict: "FAIL", residual_risks: [...(verdict.residual_risks ?? []), "PASS without a commit sha"] };
 if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
@@ -105,7 +111,7 @@ if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
 const maxFix = args.maxFixRounds ?? 2;
 let review; let round = 0;
 while (true) {
-  review = await runs.run("review-" + round, {
+  review = await safe(runs.run("review-" + round, {
     agent: "wf-step-reviewer", label: "Review " + contract.step,
     task: [
       "Review plan step " + contract.step + ", commit " + verdict.commit + ".",
@@ -114,14 +120,14 @@ while (true) {
       "Worker STEP-VERDICT JSON:", JSON.stringify(verdict)
     ].join("\n"),
     outputSchema: REVIEW_VERDICT
-  });
+  }));
   const rv = review.structuredOutput;
   if (review.ok && rv && rv.verdict === "PASS") break;
   if (round >= maxFix || !impl.runId) {
     { result = { state: "FAIL", stage: "review", round, review: rv, error: review.error, workerRunId: impl.runId }; break main; }
   }
   round += 1;
-  impl = await runs.run("fix-" + round, {
+  impl = await safe(runs.run("fix-" + round, {
     resume: impl.runId, label: "Fix " + contract.step + " round " + round,
     task: "Reviewer findings (verbatim JSON). Address each, re-run all gates, emit a new STEP-VERDICT:\n" + JSON.stringify(rv ?? review.error),
     // Confirmed live (2026-09-24, toy step-01-hello): `resume` does NOT re-capture `outputSchema`
@@ -132,7 +138,7 @@ while (true) {
     // Same reason as outputSchema: resume resolves per-launch fields from the request first, so the host-run gates
     // must be passed again or a fix commit could pass on the worker's own claims.
     acceptance: ACCEPTANCE
-  });
+  }));
   verdict = impl.structuredOutput;
   if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
     { result = { state: verdict?.verdict ?? "FAIL", stage: "fix", round, runId: impl.runId, verdict, error: impl.error }; break main; }
@@ -144,8 +150,8 @@ let ci = null;
 if (args.pr !== undefined) {
   // expectSha binds the checks to this step's commit (a green PR head for an older commit is "stale", not green).
   // timeoutMs stays above the 30-minute CI wait so a slow CI cannot kill the runner.
-  const ciRun = await runs.run("ci", { agent: "wf-host-command", label: "Read CI for PR " + args.pr, timeoutMs: 2100000,
-    task: JSON.stringify({ script: "ci-gate", pr: args.pr, waitSeconds: 1800, expectSha: verdict.commit }) });
+  const ciRun = await safe(runs.run("ci", { agent: "wf-host-command", label: "Read CI for PR " + args.pr, timeoutMs: 2100000,
+    task: JSON.stringify({ script: "ci-gate", pr: args.pr, waitSeconds: 1800, expectSha: verdict.commit }) }));
   try { ci = ciRun.ok ? JSON.parse(ciRun.output) : { state: "unknown", error: ciRun.error }; } catch (e) { ci = { state: "unknown", error: "ci-gate output unparseable" }; }
 }
 
@@ -169,8 +175,8 @@ const verdictOut = result.ledger ? null : result.verdict;
 let ledgerApply = null;
 if (result.ledger) {
   // The review passed: record decisions/deferred rows; tick the step only when the step is PASS (CI included).
-  const la = await runs.run("ledger", { agent: "wf-host-command", label: "Apply ledger " + result.ledger.step,
-    task: JSON.stringify({ script: "ledger-apply", planDir: args.planDir, ledgerFile: args.ledgerFile, ledgers: [{ ...result.ledger, tick: result.state === "PASS" }] }) });
+  const la = await safe(runs.run("ledger", { agent: "wf-host-command", label: "Apply ledger " + result.ledger.step,
+    task: JSON.stringify({ script: "ledger-apply", planDir: args.planDir, ledgerFile: args.ledgerFile, ledgers: [{ ...result.ledger, tick: result.state === "PASS" }] }) }));
   try { ledgerApply = la.ok ? JSON.parse(la.output) : { ok: false, errors: [la.error] }; } catch (e) { ledgerApply = { ok: false, errors: ["ledger-apply output unparseable"] }; }
   if (!ledgerApply.ok && result.state === "PASS") result = { ...result, state: "BLOCKED", stage: "ledger" };
 }
@@ -185,8 +191,8 @@ const status = result.state === "PASS" ? (actionables.some((a) => a.kind === "de
 const stepId = L?.step ?? stepName;
 const summary = result.state === "PASS"
   ? stepId + " PASS @" + String(L.commit).slice(0, 7) + "; " + (L.gates ?? []).filter((g) => g.result === "pass").length + " gates passed; ledger " + (ledgerApply?.ok ? "applied" : "NOT applied") + "."
-  : stepId + " " + result.state + " at " + (result.stage ?? "?") + ".";
+  : stepId + " " + result.state + (result.stage ? " at " + result.stage : "") + ": " + String(result.reason ?? result.error ?? "see result.json").split("\n").filter((l) => l && !/^Run fan-out/.test(l)).slice(0, 2).join(" ").slice(0, 200) + ".";
 const envelope = { stage: "execute-step", status, summary, actionables, artifacts: { primary: result.state === "PASS" ? ledgerPath : stageDir + "/result.json", details: [stageDir + "/result.json"] } };
-await runs.run("persist", { agent: "wf-host-command", label: "Persist " + stepId,
-  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: { ...result, ledgerApply } }, { path: stageDir + "/brief.json", json: envelope }] }) });
+await safe(runs.run("persist", { agent: "wf-host-command", label: "Persist " + stepId,
+  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: { ...result, ledgerApply } }, { path: stageDir + "/brief.json", json: envelope }] }) }));
 return envelope;

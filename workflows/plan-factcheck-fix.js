@@ -3,6 +3,9 @@
 //         mode?: "structural"|"simple", angles?: number|[], maxSynthRounds?: 3 }
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Gate commands run through the host shell, so the env override expands there (isolated test installs set it).
+// A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
+// failed result so every exit path reports (runs.all already returns per-child failures).
+const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 const SKILLS = "${PI_WORKFLOW_SKILLS_DIR:-/home/ignacio/pr/pi-workflow-skills}";
 
 const angles = Array.isArray(args.angles) ? args.angles : (args.angles ? Array.from({ length: args.angles }, (_, i) => i + 1) : []);
@@ -63,7 +66,7 @@ while (true) {
         "Rewrite " + planOutputPath + " (and the affected step files/sidecars) to resolve every listed error."
       ].join("\n");
 
-  synth = await runs.run("synth-" + round, {
+  synth = await safe(runs.run("synth-" + round, {
     agent: "wf-synthesizer", label: "Synthesize plan round " + round,
     task: roundTask, skill: "planner, step-contract",
     // Only round 0 binds planOutputPath: the runtime rejects two children resolving output to the same file.
@@ -73,7 +76,7 @@ while (true) {
       command: SKILLS + "/scripts/validate-plan.sh " + planOutputPath,
       output: "json", schema: VALIDATE_SCHEMA, timeoutMs: 120000
     }
-  });
+  }));
   validation = synth.structuredOutput; // typed gate's parsed stdout lands in result.structuredOutput
   if (validation && validation.ok === true) break;
   round += 1;
@@ -89,14 +92,14 @@ const CLASSIFY_SCHEMA = {
 };
 // One report path per round: the runtime rejects two children resolving output to the same file.
 let factcheckPath = args.planDir + "/factcheck-0.json";
-let fc = await runs.run("factcheck-0", {
+let fc = await safe(runs.run("factcheck-0", {
   agent: "wf-fact-checker", label: "Fact-check plan", output: factcheckPath,
   task: "Fact-check the plan at " + planOutputPath + " against the repo: verify every gate command exists and is runnable, and every cited fact is real. Write a JSON report to your output path: {claims:[{claim, verdict: CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE, evidence}]}.",
   gate: {
     command: SKILLS + "/scripts/classify-factcheck.sh " + factcheckPath,
     output: "json", schema: CLASSIFY_SCHEMA, timeoutMs: 60000
   }
-});
+}));
 let fcClass = fc.structuredOutput; // typed gate's parsed stdout
 // Fail closed: an unusable report (classifier error, no claims, failed run) is not a clean fact-check.
 const fcUnusable = (run, cls) => !run.ok || !cls || cls.error || !(cls.total > 0);
@@ -105,26 +108,26 @@ if (fcUnusable(fc, fcClass)) { result = { state: "FAIL", stage: "factcheck", pla
 // 4. If refuted+partial > 0: one builtin-worker fix pass, then a second fact-check round.
 if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
   // The fix pass rewrites plan.json, step files and sidecars, so it runs under the same validate-plan gate as synthesis.
-  const fix = await runs.run("plan-fix-0", {
+  const fix = await safe(runs.run("plan-fix-0", {
     agent: "worker", skill: "step-contract", label: "Fix plan per fact-check",
     task: "Fix the plan at " + planOutputPath + " (and affected step files/sidecars/PROGRESS.md) per the REFUTED/PARTIAL/DISPUTED claims in the fact-check report at " + factcheckPath + " (counts: " + JSON.stringify(fcClass) + "). Keep plan.json and every sidecar identical where they overlap.",
     gate: {
       command: SKILLS + "/scripts/validate-plan.sh " + planOutputPath,
       output: "json", schema: VALIDATE_SCHEMA, timeoutMs: 120000
     }
-  });
+  }));
   if (!fix.ok || !fix.structuredOutput || fix.structuredOutput.ok !== true) {
     { result = { state: "FAIL", stage: "plan-fix", planPath: planOutputPath, factcheckPath, validation: fix.structuredOutput, error: fix.error }; break main; }
   }
   factcheckPath = args.planDir + "/factcheck-1.json";
-  fc = await runs.run("factcheck-1", {
+  fc = await safe(runs.run("factcheck-1", {
     agent: "wf-fact-checker", label: "Re-fact-check plan", output: factcheckPath,
     task: "Re-verify the plan at " + planOutputPath + " after fixes. Same report schema.",
     gate: {
       command: SKILLS + "/scripts/classify-factcheck.sh " + factcheckPath,
       output: "json", schema: CLASSIFY_SCHEMA, timeoutMs: 60000
     }
-  });
+  }));
   fcClass = fc.structuredOutput;
   if (fcUnusable(fc, fcClass)) { result = { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error }; break main; }
 }
@@ -150,6 +153,6 @@ const summary = result.state === "PASS"
   : "plan FAIL at " + (result.stage ?? "?") + ".";
 const status = result.state !== "PASS" ? "failed" : (result.pendingDecisions ?? []).length ? "needs-decision" : "done";
 const envelope = { stage: "plan", status, summary, actionables, artifacts: { primary: result.planPath ?? planOutputPath, details: [stageDir + "/result.json", ...(result.factcheckPath ? [result.factcheckPath] : [])] } };
-await runs.run("persist", { agent: "wf-host-command", label: "Persist plan result",
-  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) });
+await safe(runs.run("persist", { agent: "wf-host-command", label: "Persist plan result",
+  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) }));
 return envelope;

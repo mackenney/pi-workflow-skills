@@ -6,6 +6,9 @@
 //          no schema on them (small models reject it); the main child receives their paths.
 // Returns the envelope; <stageDir>/brief.json holds it (written by this script, not by the child). A child that fails or returns an invalid envelope is retried once
 // on `delegate`; if that also fails, this script writes a `blocked` envelope itself.
+// A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
+// failed result so every exit path reports (runs.all already returns per-child failures).
+const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 const ENVELOPE = {
   type: "object", additionalProperties: false,
   required: ["stage", "status", "summary", "actionables", "artifacts"],
@@ -49,21 +52,21 @@ const schemaOk = (r) => r && r.ok && r.structuredOutput && ENVELOPE.properties.s
 // No `output` binding on the stage child: the runtime tells a child to write its report to its output path, so a bound
 // brief.json received the detail report instead of the envelope (observed 2026-10-05 with wf-fact-checker).
 // brief.json is written from structuredOutput by the persist step below.
-let run = await runs.run("main", {
+let run = await safe(runs.run("main", {
   agent: args.agent, label: args.stage, task, outputSchema: ENVELOPE,
   ...(args.skill ? { skill: args.skill } : {}), ...(args.model ? { model: args.model } : {})
-});
-const chkMain = await runs.run("check-main", { agent: "wf-host-command", label: "Check " + args.stage + " detail file", task: CHECK_TASK });
+}));
+const chkMain = await safe(runs.run("check-main", { agent: "wf-host-command", label: "Check " + args.stage + " detail file", task: CHECK_TASK }));
 let ok = schemaOk(run) && !missingFrom(chkMain);
 let fallback = null;
 if (!ok && args.agent !== "delegate") {
   fallback = { agent: args.agent, error: run.error ?? (schemaOk(run) ? "detail file " + detail + " not written" : "no valid envelope") };
   // Own output path: the runtime rejects two children resolving output to the same file.
-  run = await runs.run("main-retry", {
+  run = await safe(runs.run("main-retry", {
     agent: "delegate", label: args.stage + " (retry on delegate)", task, outputSchema: ENVELOPE,
     ...(args.skill ? { skill: args.skill } : {})
-  });
-  const chkRetry = await runs.run("check-retry", { agent: "wf-host-command", label: "Check " + args.stage + " detail file (retry)", task: CHECK_TASK });
+  }));
+  const chkRetry = await safe(runs.run("check-retry", { agent: "wf-host-command", label: "Check " + args.stage + " detail file (retry)", task: CHECK_TASK }));
   ok = schemaOk(run) && !missingFrom(chkRetry);
 }
 let envelope = ok ? { ...run.structuredOutput, artifacts: { ...run.structuredOutput.artifacts, primary: detail } } : {
@@ -75,6 +78,6 @@ let envelope = ok ? { ...run.structuredOutput, artifacts: { ...run.structuredOut
 if (fallback && ok) envelope = { ...envelope, actionables: [{ what: args.agent + " failed (" + String(fallback.error).slice(0, 120) + "); delegate completed the stage", kind: "info", ref: args.stageDir }, ...envelope.actionables].slice(0, 12) };
 if (helperPaths.length) envelope = { ...envelope, artifacts: { ...envelope.artifacts, details: [...new Set([...(envelope.artifacts.details ?? []), ...helperPaths])] } };
 // brief.json is always the final envelope (retry or synthesized), whatever the child wrote.
-await runs.run("persist", { agent: "wf-host-command", label: "Persist " + args.stage + " brief",
-  task: JSON.stringify({ script: "write-artifact", path: brief, json: envelope }) });
+await safe(runs.run("persist", { agent: "wf-host-command", label: "Persist " + args.stage + " brief",
+  task: JSON.stringify({ script: "write-artifact", path: brief, json: envelope }) }));
 return envelope;

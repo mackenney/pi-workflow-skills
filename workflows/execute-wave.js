@@ -6,6 +6,9 @@
 // Integration is the PARENT's job: committed lanes are retained on branches `pi-subagents/<key>-...`, recorded in
 // <lane.asyncDir>/handoff.json (groups[0].children[0].patch.branch). Merge them, then re-run the wave's gates on the
 // merged tree, then apply the lane ledgers with ledger-apply {"planDir", "fromResult": "<stageDir>/result.json"}. Sandbox rules: top-level await only, no nested async fns, no fs.
+// A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
+// failed result so every exit path reports (runs.all already returns per-child failures).
+const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
 
 const WORKER_BY_TIER = {
   deep: { agent: "wf-structural-worker" },
@@ -82,6 +85,7 @@ const workers = await runs.all(contracts.map((c, i) => {
       "Ledger (read-only for you): " + ledgerPath + " - report ledger rows in your verdict; a script writes the file from it after integration.",
       "Base commit for fails-before checks: " + (args.baseCommit ?? c.base_commit ?? "HEAD"),
       "You are in an isolated git worktree. Commit your work there; report the commit sha in STEP-VERDICT.commit.",
+      "Never edit the step file, its gate sidecar, plan.json or PROGRESS.md. If a gate is wrong or cannot pass with a correct implementation, return FAIL and explain it under pending_decisions.",
       "Executor tier: " + tier + ". Follow the step-contract skill exactly."
     ].join("\n"),
     outputSchema: STEP_VERDICT,
@@ -137,6 +141,6 @@ const passN = lanes.filter((x) => x.state === "PASS").length;
 const status = result.state === "BLOCKED" ? "blocked" : passN === 0 ? "failed" : actionables.some((a) => a.kind === "decision") ? "needs-decision" : result.state === "PASS" ? "done" : "failed";
 const summary = result.state === "BLOCKED" ? "wave BLOCKED: " + (result.reason ?? "") : passN + "/" + lanes.length + " lanes PASS. Next: merge PASS lanes in step order, re-run their gates on the merged tree, then ledger-apply fromResult.";
 const envelope = { stage: "execute-wave", status, summary, actionables, artifacts: { primary: stageDir + "/result.json", details: [] } };
-await runs.run("persist", { agent: "wf-host-command", label: "Persist wave",
-  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) });
+await safe(runs.run("persist", { agent: "wf-host-command", label: "Persist wave",
+  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) }));
 return envelope;
