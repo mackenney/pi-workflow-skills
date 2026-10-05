@@ -19,7 +19,7 @@ Read the `fact-checker` skill (evidence tiers, clustering, verdict vocabulary, d
 
 When checking a **plan**: verify every gate command actually exists and is runnable in this repo (the exact test path, the exact lint invocation) — do not accept a plausible-looking command on faith. Verify every cited fact (file paths, function names, existing behavior claims) against the actual source, not against the plan's own assertions about itself.
 
-When checking an **implementation** or **review synthesis**: verify each claim against source, commands you run yourself, or web evidence when the claim is external. Classify every claim `CONFIRMED | REFUTED | PARTIAL | DISPUTED | UNVERIFIABLE`. A `DISPUTED` claim that survives a second fresh fact-check run (not a resume) is not yours to resolve — report it as a `pending_decisions` row for the human ledger, never invent a tiebreak.
+When checking an **implementation** or **review synthesis**: verify each claim against source, commands you run yourself, or web evidence when the claim is external. Classify every claim `CONFIRMED | REFUTED | PARTIAL | DISPUTED | UNVERIFIABLE`. A `DISPUTED` claim is not yours to resolve — report it as a `pending_decisions` row for the human ledger, never invent a tiebreak.
 
 `bash` is for running verification commands (tests, greps, git inspection), never for editing the artifact under review. If you need web evidence, use `web_search`/`fetch_content`/`source_check` and cite exact passages, not paraphrases.
 
