@@ -378,7 +378,7 @@ function main() {
     const indent = detectIndent(settingsRaw);
     const tmpPath = `${opts.settings}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(newSettings, null, indent) + "\n");
-    fs.chmodSync(tmpPath, fs.statSync(opts.settings).mode & 0o777);
+    if (fs.existsSync(opts.settings)) fs.chmodSync(tmpPath, fs.statSync(opts.settings).mode & 0o777);
     fs.renameSync(tmpPath, opts.settings);
 
     const newState = { appliedAt: nowIso, applied: { ...state.applied }, overrides: overridesTiers };

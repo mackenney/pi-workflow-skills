@@ -126,6 +126,7 @@ check "ci: pending -> pending" '.state == "pending"' "$(ci '[{"name":"b","bucket
 check "ci: no checks reported -> none" '.state == "none"' "$(STUB_ERR='no checks reported on the branch' PI_WF_GH="$T/bin/gh" "$S/ci-gate.sh" <<< '{"pr":1}')"
 check "ci: stale head sha" '.state == "stale"' "$(ci '[{"name":"a","bucket":"pass"}]' '{"pr":1,"expectSha":"fff0000"}')"
 check "ci: matching head sha" '.state == "green"' "$(ci '[{"name":"a","bucket":"pass"}]' '{"pr":1,"expectSha":"abc1234"}')"
+check "ci: short expectSha -> unknown" '.state == "unknown"' "$(ci '[{"name":"a","bucket":"pass"}]' '{"pr":1,"expectSha":"a"}')"
 
 # terminal-gate strict parsing (review item 8)
 ledger "$T/tg/PROGRESS.md" "" "" $'## Steps\n- [x] a\n1. step-02 still to do'
@@ -205,6 +206,11 @@ echo '{"enabledModels":["anthropic/m-std"],"subagents":{"agentOverrides":{}}}' >
 out="$(node "$S/generate-tier-overrides.mjs" --agents-md "$T/AGENTS.md" --settings "$T/settings.json" --package-dir "$ROOT" 2>&1)"
 if printf '%s' "$out" | grep -q 'fallback'; then fail=$((fail+1)); echo "FAIL: generator kept the fallback prose in the model id"; printf '%s\n' "$out" | grep fallback | head -2
 elif printf '%s' "$out" | grep -q '^worker | model | .* | "anthropic/m-std" |'; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: generator did not bind worker to anthropic/m-std"; printf '%s\n' "$out" | grep worker | head -2; fi
+
+# --apply keeps settings.json's mode and writes the state file beside --settings, never into ~/.pi/agent
+chmod 600 "$T/settings.json"
+node "$S/generate-tier-overrides.mjs" --apply --agents-md "$T/AGENTS.md" --settings "$T/settings.json" --package-dir "$ROOT" >/dev/null 2>&1
+if [ "$(stat -c %a "$T/settings.json")" = 600 ] && [ -f "$T/tier-overrides.state.json" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: generator --apply: mode $(stat -c %a "$T/settings.json"), state beside settings: $([ -f "$T/tier-overrides.state.json" ] && echo yes || echo no)"; fi
 
 echo "scripts.test: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
