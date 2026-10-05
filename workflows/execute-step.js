@@ -75,6 +75,8 @@ const RESUME_FROM = ["gates", "review", "fix", "ci", "ledger"];
 const RESUME_KEYS = ["from", "commit", "workerRunId", "guidance", "resultPath"];
 // Where a stopped step can continue without redoing finished work; null when nothing reusable exists (no commit).
 const resumeAt = (from, commit, workerRunId) => (commit ? { from, commit, workerRunId: workerRunId ?? null } : null);
+// A worker FAIL may be environmental, so the human is offered the other resume point too; the workflow never picks.
+const altResume = (from, commit, workerRunId) => (commit ? [resumeAt(from, commit, workerRunId)] : []);
 // A worker PASS the runtime's acceptance rejected is a FAIL; returning "PASS" here would reach the tail with no ledger.
 const failState = (v) => (v?.verdict === "BLOCKED" ? "BLOCKED" : "FAIL");
 const fixPassless = (v) => (v && v.verdict === "PASS" && !v.commit ? { ...v, verdict: "FAIL", residual_risks: [...(v.residual_risks ?? []), "PASS without a commit sha"] } : v);
@@ -177,8 +179,9 @@ if (!R) {
   if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
     // A commit the runtime's gates rejected while the worker claimed PASS points at the environment: re-run gates once it
     // is fixed. A worker that itself reported FAIL/BLOCKED left real work: continue it with guidance.
-    const rp = resumeAt(impl.structuredOutput?.verdict === "PASS" && !impl.ok ? "gates" : "fix", verdict?.commit, impl.runId);
-    result = { state: failState(verdict), stage: "implement", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance, resumePoint: rp }; break main;
+    const rejected = impl.structuredOutput?.verdict === "PASS" && !impl.ok;
+    const rp = resumeAt(rejected ? "gates" : "fix", verdict?.commit, impl.runId);
+    result = { state: failState(verdict), stage: "implement", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance, resumePoint: rp, resumeAlternatives: altResume(rejected ? "fix" : "gates", verdict?.commit, impl.runId) }; break main;
   }
 } else if (from === "gates") {
   const tmo = verify.reduce((s, g) => s + g.timeoutMs, 0) + 60000;
@@ -221,7 +224,7 @@ if (!R) {
   }
   verdict = fixPassless(impl.structuredOutput);
   if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
-    result = { state: failState(verdict), stage: "fix", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance, resumePoint: resumeAt("fix", verdict?.commit ?? resumeCommit, impl.runId) }; break main;
+    result = { state: failState(verdict), stage: "fix", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance, resumePoint: resumeAt("fix", verdict?.commit ?? resumeCommit, impl.runId), resumeAlternatives: altResume("gates", verdict?.commit ?? resumeCommit, impl.runId) }; break main;
   }
 }
 
@@ -268,7 +271,7 @@ if (from !== "ci" && from !== "ledger") {
     });
     verdict = fixPassless(impl.structuredOutput);
     if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
-      result = { state: failState(verdict), stage: "fix", round, runId: impl.runId, verdict, review: rv, error: impl.error, resumePoint: resumeAt("fix", verdict?.commit ?? lastCommit, impl.runId) }; break main;
+      result = { state: failState(verdict), stage: "fix", round, runId: impl.runId, verdict, review: rv, error: impl.error, resumePoint: resumeAt("fix", verdict?.commit ?? lastCommit, impl.runId), resumeAlternatives: altResume("gates", verdict?.commit ?? lastCommit, impl.runId) }; break main;
     }
   }
 }
@@ -315,12 +318,13 @@ if (result.ledger) {
 }
 // The exact args that continue this step; resultPath lets the resumed run reuse this run's verdict/ledger, and a fresh
 // stageDir keeps this run's result.json intact.
-const rp = result.state !== "PASS" ? result.resumePoint ?? null : null;
-if (rp) {
+const withArgs = (pt) => {
   const { resume: _old, ...rest } = args;
-  rp.args = { ...rest, stageDir: stageDir + "-resume-" + rp.from, resume: { from: rp.from, commit: rp.commit, ...(rp.workerRunId ? { workerRunId: rp.workerRunId } : {}), resultPath: stageDir + "/result.json" } };
-  result = { ...result, resumePoint: rp };
-}
+  return { ...pt, args: { ...rest, stageDir: stageDir + "-resume-" + pt.from, resume: { from: pt.from, commit: pt.commit, ...(pt.workerRunId ? { workerRunId: pt.workerRunId } : {}), resultPath: stageDir + "/result.json" } } };
+};
+const rp = result.state !== "PASS" && result.resumePoint ? withArgs(result.resumePoint) : null;
+const alts = rp ? (result.resumeAlternatives ?? []).map(withArgs) : [];
+if (rp) result = { ...result, resumePoint: rp, ...(alts.length ? { resumeAlternatives: alts } : {}) };
 const L = result.ledger;
 const actionables = [];
 // Failure and resume first: the envelope caps actionables at 12 and these are the ones the parent must act on.
@@ -328,6 +332,10 @@ if (result.state !== "PASS") actionables.push({ what: (result.stage ?? "step") +
 if (rp) {
   const full = "resume from " + rp.from + " at " + rp.commit + (rp.from === "fix" ? " (add resume.guidance)" : "") + ": args.resume=" + JSON.stringify(rp.args.resume);
   actionables.push({ what: full.length <= 300 ? full : "resume from " + rp.from + " at " + rp.commit + ": pass result.json resumePoint.args", kind: "fix", ref: stageDir + "/result.json#resumePoint" });
+}
+for (const a of alts) {
+  const full = "resume from " + a.from + " at " + a.commit + (a.from === "gates" ? " (after fixing the environment)" : " (add resume.guidance)") + ": args.resume=" + JSON.stringify(a.args.resume);
+  actionables.push({ what: full.length <= 300 ? full : "resume from " + a.from + " at " + a.commit + ": pass result.json resumeAlternatives args", kind: "fix", ref: stageDir + "/result.json#resumeAlternatives" });
 }
 for (const p of L?.pending_decisions ?? []) actionables.push({ what: p, kind: "decision", ref: ledgerPath + "#pending-decisions-human" });
 for (const d of L?.deferred ?? []) actionables.push({ what: "deferred " + d.gate + " (owed by " + d.owed_by + ")", kind: "info", ref: ledgerPath + "#tech-debt--deferred-gates" });

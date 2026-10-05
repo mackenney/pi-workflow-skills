@@ -147,6 +147,8 @@ const board = contracts.map((c, i) => {
     commit: v?.commit ?? null, workerRunId: w.runId, asyncDir: w.asyncDir,
     // Same rule as execute-step.js: a claimed PASS the runtime gates rejected re-runs gates; a worker FAIL continues the work.
     resumeFrom: state === "PASS" || !v?.commit ? null : pIdx >= 0 ? (crashed(r) ? "review" : "fix") : (v.verdict === "PASS" && !w.ok ? "gates" : "fix"),
+    // The human chooses (fix the environment then re-run gates, or spend the worker again); the workflow never infers which.
+    resumeAlternative: state === "PASS" || !v?.commit || pIdx >= 0 ? null : (v.verdict === "PASS" && !w.ok ? "fix" : "gates"),
     error: w.error ?? (noCommit ? "PASS without a commit sha" : null) ?? (pIdx >= 0 && crashed(r) ? "reviewer failed twice (infrastructure): " + (r?.error ?? "no REVIEW-VERDICT") : r?.error) ?? null,
     ledger: v ? { step: c.step, commit: v.commit, ledgerPath, gates: v.gates, deferred: v.deferred, proxies_used: v.proxies_used,
                   decisions_taken: v.decisions_taken, pending_decisions: v.pending_decisions, residual_risks: v.residual_risks, review: rv } : null
@@ -161,6 +163,7 @@ const lanes = result.board ?? [];
 const actionables = [];
 for (const l of lanes.filter((x) => x.state === "PASS")) actionables.push({ what: "merge " + l.step + " @" + String(l.commit).slice(0, 7) + " (branch in handoff.json)", kind: "info", ref: l.asyncDir + "/handoff.json" });
 for (const l of lanes.filter((x) => x.state !== "PASS")) actionables.push({ what: l.step + " " + l.state + " at " + l.stage + ": " + (l.resumeFrom ? (l.resumeFrom === "review" ? "reviewer crashed; " : "") + "merge the lane branch, then execute-step.js resume {from: \"" + l.resumeFrom + "\", commit: \"" + l.commit + "\", workerRunId: \"" + l.workerRunId + "\"}" : "re-run through execute-step.js"), kind: "fix", ref: stageDir + "/result.json" });
+for (const l of lanes.filter((x) => x.state !== "PASS" && x.resumeAlternative)) actionables.push({ what: l.step + ": alternatively resume from " + l.resumeAlternative + " (after fixing the environment): execute-step.js resume {from: \"" + l.resumeAlternative + "\", commit: \"" + l.commit + "\", workerRunId: \"" + l.workerRunId + "\"}", kind: "fix", ref: stageDir + "/result.json" });
 for (const l of lanes) for (const p of l.ledger?.pending_decisions ?? []) actionables.push({ what: l.step + ": " + p, kind: "decision", ref: stageDir + "/result.json" });
 if (!lanes.length) actionables.push({ what: result.reason ?? result.error ?? "wave blocked", kind: "fix", ref: stageDir + "/result.json" });
 const passN = lanes.filter((x) => x.state === "PASS").length;
