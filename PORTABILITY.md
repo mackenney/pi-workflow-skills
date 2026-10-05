@@ -1,0 +1,72 @@
+# Portability: what of this pipeline moves to Claude Code or Codex, and what does not
+
+Status: guidance, written once (2026-09-24). **This file is documentation only.** Nothing in `pi-workflow-skills` renders, syncs, installs or checks agent definitions for Claude Code or Codex, and no code in this package writes under `~/.claude` or `~/.codex`. Those directories are user-global and outside any repository; setting them up is left to whoever uses this package with those harnesses. This file is not kept in sync automatically with `ORCHESTRATION-ENCODING.md`, the agents, or the skills — when they change, this file may lag.
+
+Sources: `/tmp/pi_analysis/FACTCHECK-DIRECTION.md` sections D1 (Claude Code), D2 (Codex), D3 (SKILL.md portability), E2 (why a multi-harness renderer was rejected), as of 2026-09-24; official docs https://code.claude.com/docs/en/sub-agents, https://code.claude.com/docs/en/hooks, https://developers.openai.com/codex/subagents. Claude Code CLI 2.1.280 was installed locally when this was written; Codex was not. Both harness sections are single-vendor-source and will drift.
+
+---
+
+## 1. What the pipeline is made of
+
+`ORCHESTRATION-ENCODING.md` splits the pipeline into five kinds of thing. Only the first two are prose that any harness can carry.
+
+| Kind | Examples | Portable? |
+|---|---|---|
+| **Role bodies** | the system prompts of `wf-planner`, `wf-synthesizer`, `wf-structural-worker`, `wf-step-reviewer`, `wf-code-reviewer`, `wf-fact-checker` | **Yes** — plain text; paste into the target harness's agent body. |
+| **`step-contract` vocabulary** and other `SKILL.md` content | gate taxonomy (build / static / unit / integ / e2e-smoke / regress), coverage matrix, Proxy Rule, First-Artifact Rule, hard-splits list, STEP-VERDICT / REVIEW-VERDICT schemas, PROGRESS.md ledger sections and row grammar (`open` / `discharged <commit>` / `waived by <human> <date>: <reason>`); `planner`, `specifier`, `fact-checker`, `code-reviewer` skill knowledge | **Yes** — `SKILL.md` is a portable shape: pi loads it via `skills:`/`/skill:`, Claude Code preloads it via the `skills` frontmatter field, Codex via `skills.config` in the agent file (fact-check D3). The *content* is harness-neutral by design (no dispatch syntax, no tiers, no models). |
+| **Tier binding** | `tier:` frontmatter + `~/.pi/agent/AGENTS.md` table + `scripts/generate-tier-overrides.mjs` → `settings.json → subagents.agentOverrides` | **No** as a mechanism. `tier:` is inert data everywhere; the generator targets pi-subagents settings only. The *table* is readable by a human porting roles. |
+| **Runtime enforcement** | per-item typed `gate:{command,output:"json",schema}`, `acceptance.verify[]` host-run commands, `outputSchema` structured verdicts, `modelScope`, `worktree: true` | **No** — pi-subagents only (D3). |
+| **Orchestration** | `workflow: true` / `workflow: "<script path>"` pipelines (`plan-factcheck-fix.js`, `execute-step.js`, `execute-wave.js` with `runs.lanes`, `review-factcheck-fix.js`, `terminal-gate.js`), the `contact_supervisor` / `subagent_supervisor` channel with blocking `need_decision`, missions and `state`, retained-child `resume` | **No** — pi-subagents only. |
+
+Everything that makes the pipeline *non-negotiable* — the runtime deciding pass/fail from planner-authored commands, typed verdicts, the paused-until-human-answers escalation, the ledger gate — is in the last two rows. Porting the first two rows gives you the *roles and the rubric*; it does not give you the enforcement. Plan for a human (or another orchestration layer) to supply it.
+
+---
+
+## 2. Claude Code (fact-check D1)
+
+**Agent format.** One `.md` file with YAML frontmatter per agent, under `~/.claude/agents` (user) or `.claude/agents` (project; discovered by walking up to the repo root). The body is the subagent's system prompt: *"Subagents receive only this system prompt plus basic environment details like the working directory, not the Claude Code system prompt."*
+
+**Default context is richer than pi-subagents' `replace` mode — decide whether to keep or strip it.** A non-fork Claude Code subagent's *initial context* (not its system prompt) also contains the full `CLAUDE.md` hierarchy (`~/.claude/CLAUDE.md`, project rules, `CLAUDE.local.md`, managed policy, and `AGENTS.md` when loaded as project instructions), a git status snapshot, the preloaded skills named in the `skills` field, and a sibling roster — unless the agent sets `omitClaudeMd: true`. pi-subagents custom agents default to `inheritProjectContext: false`, `inheritSkills: false`, `systemPromptMode: replace`, i.e. the child sees only its body, the task, and the runtime blocks. So a role ported verbatim will behave differently: the reviewer will "know" your global CLAUDE.md rules; the worker will see the git status. For read-only roles (reviewer, fact-checker) this is usually fine. For writers, decide explicitly: keep the hierarchy (closest to pi's `inheritProjectContext: true` + `inheritGlobalContext: true`) or set `omitClaudeMd: true` (closest to pi's default) and put the repo rules you want into the body.
+
+**Model.** `model:` takes an alias (`sonnet`, `opus`, `haiku`, `fable`), a full model ID, or `inherit`. Only Anthropic model families. There is no per-role tier table; the nearest central override is the `CLAUDE_CODE_SUBAGENT_MODEL` environment variable, which forces one model onto *every* subagent (coarse, all-or-nothing; before v2.1.251 it also overrode per-invocation and frontmatter `model:` including `inherit`). `--agents '<json>'` can inject full agent definitions at launch. To reproduce pi's tier→model table you would write the model alias into each agent file by hand from `~/.pi/agent/AGENTS.md`'s table (`frontier → fable`, `deep → opus`, `standard → sonnet`; there is no Anthropic `fast`-tier equivalent of DeepSeek — use `haiku`).
+
+**Tools.** Per-agent tool allow-lists exist but use Claude Code's vocabulary (`Read`, `Grep`, `Glob`, `Bash`, `Edit`, `Write`, …), not pi's (`read, grep, find, ls, bash, edit, write`). Background subagents have a further tool filter applied. Map by hand; note `wf-step-reviewer`'s "bash but no edit/write" contract is expressible.
+
+**Gates.** Claude Code has no per-child gate with typed stdout. The nearest equivalent is **hooks**: `PreToolUse`, `PostToolUse`, `SubagentStop`, `Stop`/`StopFailure` can run arbitrary host commands and block. A `SubagentStop` hook that runs the step's gate commands and returns a blocking result is the closest you can get to `acceptance.verify` — but it is session-level configuration, not part of the agent definition, it has no `outputSchema`, and it cannot read a `step-NN.gates.json` sidecar unless you write that glue yourself.
+
+**Verdicts.** No `outputSchema` / `structured_output` per child. Ask for the STEP-VERDICT block as the *last* content of the reply (the retro's original prose protocol) and parse it yourself; accept that truncation is your problem again.
+
+**Child → parent channel.** `SendMessage` with `to: main` (and to named siblings) exists from v2.1.206 and is bidirectional mid-run. It is a **coarser, non-blocking analogue** of `contact_supervisor`: there is no `need_decision` reason that pauses the child until the parent replies, and no reply-receipt contract. A ported worker's "escalate and wait" instruction becomes "send a message and stop"; the human has to restart or re-prompt.
+
+**Skills.** `skills:` frontmatter preloads skill content into the subagent. Point it at the `step-contract`, `planner`, `fact-checker`, `code-reviewer` skills (the existing `claude-install.sh` symlinks this package's skills into `~/.claude/skills`; it is skills-only and unchanged by this design).
+
+**Not portable at all.** `runs.lanes` waves, `resume` fix loops with a retained child, `worktree: true` managed worktrees with patch manifests, `modelScope`, missions/`state`, `acceptanceRole` inference, `timeoutMs`/`toolBudget` per agent.
+
+## 3. Codex (fact-check D2)
+
+**Agent format.** Standalone TOML files under `~/.codex/agents` (personal) or `.codex/agents` (project), one agent per file; `name` inside the file is the source of truth, not the filename. Required keys: `name`, `description`, `developer_instructions` (= the role body). Optional: `model`, `model_reasoning_effort`, `sandbox_mode`, `skills.config`, `mcp_servers`, and in principle any other `config.toml` key, since agent files are loaded as configuration layers for the spawned session. Builtins are `default`, `worker`, `explorer`; a custom agent with the same `name` takes precedence.
+
+**When delegation happens.** Not only when asked. Current local releases delegate when the user asks directly **or when `AGENTS.md` or skill instructions request it**; in ChatGPT Ultra delegation can be proactive. So a ported `coordinator`-style instruction in the repo's `AGENTS.md` can trigger delegation without an explicit user request — the opposite of what an earlier draft of the pi design assumed.
+
+**Model.** `agents.default_subagent_model` (and a default reasoning effort) in `config.toml` sets one global default for spawned agents; a per-file `model` / `model_reasoning_effort` overrides it; explicit spawn values override the default. Resolution: explicit spawn value → `[agents]` default → parent's value, with the agent file's own `model` winning over all of them. There is **no role→tier indirection**: reproduce the tier table by writing the model into each TOML file by hand.
+
+**Tools.** No per-agent tool list. The only per-agent capability control is `sandbox_mode`. "Reviewer may run bash but not write" is not expressible as a tool contract; it is a sandbox choice plus prose.
+
+**Gates, verdicts, channel.** None of pi-subagents' `gate`, `acceptance.verify`, `outputSchema`, or supervisor channel exist. There is no documented hook system equivalent to Claude Code's for blocking host commands. Gating is a human-in-the-loop check or something you build outside Codex.
+
+**Skills.** `skills.config` in the agent file attaches skill content; this is the port target for `step-contract` and the role skills.
+
+## 4. Recommended porting recipe
+
+1. **Port the role bodies as-is.** Copy each `agents/wf-*.md` body into a Claude Code `.md` body or a Codex `developer_instructions` string. Delete the two sentences that assume pi mechanics: "The runtime re-runs them independently; your report does not decide the verdict" (nothing re-runs them) and "call `structured_output` …" (keep the fallback: `STEP-VERDICT:` line + fenced `gate-report` block as the last content). Replace "call `contact_supervisor` with `need_decision` and wait" with "stop and report the decision needed; do not proceed" (Claude Code: optionally `SendMessage` to `main` first).
+2. **Port the `step-contract` skill and the role skills unchanged.** They are prose. Attach via `skills:` (Claude Code) or `skills.config` (Codex). The ledger sections and row grammar are the one piece of enforcement that survives, because a human can read `open` vs `waived by …` in PROGRESS.md without any runtime.
+3. **Write the model into each agent file by hand** from `~/.pi/agent/AGENTS.md`'s Model Tiers table (Claude Code aliases `fable`/`opus`/`sonnet`/`haiku`; Codex full model IDs). Do not try to reproduce `tier:` — nothing reads it there either.
+4. **Re-implement gating as host-level hooks in Claude Code** (`SubagentStop` running the step's gate commands and blocking on failure), or **leave it to a human check in Codex**. In both cases the "sidecar → runtime" link is gone: the human reads `step-NN.gates.json` (or the step file's Gates block) and runs the commands, or the hook script does.
+5. **Do not attempt to replicate** scripted multi-stage pipelines (`plan-factcheck-fix.js`, `execute-step.js`, `review-factcheck-fix.js`), structured verdicts, `runs.lanes` waves, `resume` fix loops, or the blocking supervisor channel. Each of those needs either a human driving the sequence by hand or a different orchestration layer. Porting the roles without them gives you well-instructed agents whose claims you must verify yourself — which is exactly the pre-design state the pi encoding was built to leave.
+6. **Keep the two context modes in mind.** Claude Code's default (full CLAUDE.md hierarchy + git status + sibling roster) is closer to pi's `inheritProjectContext: true, inheritGlobalContext: true`; `omitClaudeMd: true` is closer to pi's custom-agent default. Choose per role; the pi design keeps global context off for every role and project context on for workers and reviewers.
+
+## 5. What this file is not
+
+- Not a sync target. No generator in this package emits `.claude/agents/*.md` or `.codex/agents/*.toml`, and none is planned (fact-check E2: a three-harness renderer is the most expensive part of the design and buys the least, because the target harnesses cannot execute what the roles exist to serve).
+- Not a drift monitor. If the pi agents or skills change, this file does not update.
+- Not a claim that the pipeline "works" on Claude Code or Codex. It claims that the *roles and rubric* are prose you can reuse, and lists what you lose.

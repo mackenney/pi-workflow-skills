@@ -64,9 +64,8 @@ Skills in this repo form a pipeline. Descriptions should reflect the ordering:
 | code-reviewer | standalone / post-orchestrate | changes/branch/PR | review feedback |
 | fact-checker | standalone / post-review / post-orchestrate | any document with claims | CONFIRMED/REFUTED/UNVERIFIABLE verdicts with evidence |
 
-`worker-reviewer` is **orchestrator-internal**: set `disable-model-invocation: true`
-and describe it as "internal roles loaded by the orchestrator skill." It must
-not appear in the user-facing skill catalog.
+`step-contract` is **shared vocabulary**, loaded by agents and workflows by name; it is
+not a pipeline stage. Worker/reviewer roles live in `agents/wf-*.md`, not in a skill.
 ## Examples
 
 **Good:**

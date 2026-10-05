@@ -1,397 +1,137 @@
 ---
 name: executor
-description: Executes a PROGRESS.md plan by dispatching worker-reviewer pairs in parallel waves, managing the verify cycle, escalating blockers, and tracking progress via git commits. Final execution step in the investigate→spec→plan→execute pipeline.
+description: Executes a PROGRESS.md plan step by step through the execute-step / execute-wave workflows, applies each returned ledger to PROGRESS.md, integrates wave branches, escalates blockers, and refuses to report completion until the terminal gate passes. Final execution step in the investigate→spec→plan→execute pipeline.
 ---
 
 # Executor Skill
 
-You are playing the **Executor** role. Your job is to execute a plan by dispatching workers and reviewers, tracking progress, handling failures, and reporting to the user. You coordinate — you do not implement.
+You are playing the **Executor** role: the parent session that drives a plan to completion. You coordinate, apply ledgers, integrate, and talk to the human. You do not implement, and you do not improvise `subagent(...)` calls for workers or reviewers.
 
 ## Subagent Mechanism
 
-Every "dispatch a worker" / "dispatch N reviewers" below states intent, not call syntax: one subagent per worker or reviewer, a wave's workers issued together in parallel, isolated per-worker worktree when the plan calls for it. Translate into your harness's own subagent primitive.
+Dispatch, gating, typed verdicts and bounded fix rounds live in workflow files, run via `subagent({ workflow: "<absolute script path>", args, async: true })`:
+
+| Workflow | Use for | Returns |
+|---|---|---|
+| `workflows/execute-step.js` | one step (structural or atomic): gate sidecar → worker with runtime-executed `acceptance.verify` + STEP-VERDICT → `wf-step-reviewer` REVIEW-VERDICT → ≤2 fix rounds → optional CI (`args.pr`) | `{state, ledger, workerRunId, reviewRunId}` |
+| `workflows/execute-wave.js` | a wave of **independent atomic** steps: one isolated git worktree per step, parallel workers, then parallel typed reviews. No fix rounds. | `{state: PASS\|PARTIAL, board: [{step, state, commit, asyncDir, ledger}]}` |
+| `workflows/stack-ci-gate.js` | a PR stack after any rebase: CI per PR, downstream order, stop at first non-green | `{ok, firstNonGreen?, results}` |
+| `workflows/terminal-gate.js` | plan completion: fails closed on unchecked `## Steps` items, `open`/malformed ledger rows and non-green CI | `{ok, openSteps, openDeferred, openDisabled, errors, ci?}` |
+
+Agent → model binding lives in agent `tier:` frontmatter and the generated `agentOverrides`; never name a model here. Gate classes, sidecar schema, verdict schemas and ledger row grammar are in `step-contract` — load it before touching a ledger.
 
 ## Trigger Phrases
 
-Activate this skill when the user says things like:
 - "execute the plan", "run it", "implement the steps", "executor"
-- "start the executor", "deploy agents to implement"
-- "read the plan and run it"
+- "read the plan and run it", "continue the plan"
 
 ---
 
 ## Pre-Flight Check
 
-Before dispatching any workers, perform these checks:
-
 ### 1. Locate PROGRESS.md
 
-Search in this order:
-1. Path given by the user (if any)
-2. `plans/PROGRESS.md` (standard location)
-3. `plans/*/PROGRESS.md` (named plan sub-directories)
-4. Any `PROGRESS.md` in the repo root or subdirectory (non-standard layout — scan with `find . -name PROGRESS.md -not -path '*/.venv/*' -not -path '*/.wt/*'`)
+Search: user-given path → `plans/PROGRESS.md` → `plans/*/PROGRESS.md` → `find . -name PROGRESS.md -not -path '*/.venv/*' -not -path '*/.wt/*'`. Not found: **stop and ask**.
 
-If still not found, **stop and ask the user** for the path. Do not proceed without a PROGRESS.md.
+### 2. Verify step files and sidecars
 
-### 2. Verify step files exist
+Every referenced `step-NN-*.md` must exist **with** its `step-NN-*.gates.json` sidecar (the workflows load gates from the sidecar, never from prose). Missing either: list them all in one message, do not dispatch those steps, ask whether to re-run the planner.
 
-After reading PROGRESS.md, extract every step file path referenced in the Steps list. For each one:
+### 3. Verify the ledger sections exist
 
-```bash
-# Example: verify all step files exist
-for f in plans/step-*.md; do [ -f "$f" ] || echo "MISSING: $f"; done
-```
+PROGRESS.md must contain `## Tech debt / deferred gates` and `## Disabled/softened checks` tables (`step-contract`). The terminal gate treats a missing section as a failure; add empty tables now rather than discover this at the end.
 
-If any step file is missing:
-- List all missing files in a single message to the user
-- **Do not dispatch workers for steps with missing files**
-- Stop and ask: "The following step files are referenced but do not exist: [list]. Should I re-run the planner to regenerate them, or are they in a different location?"
+### 4. Surface repo conventions
 
-### 3. Verify no file-overlap in first wave
+Read `AGENTS.md`/`CLAUDE.md`/`.cursorrules` at the project root. If a sidecar gate command conflicts with a convention (bare `pytest` vs `uv run pytest`), fix the sidecar before dispatch and record it under "Decisions taken".
 
-Scan the step files for the first wave. If two steps in the same wave touch the same file, flag it:
-- Check each step's "Files to Read" and "Implementation" sections for overlapping paths
-- If overlap detected, serialize those steps (run one after the other) and note the override in your progress tracking
+### 5. Clean tree
 
-### 4. Discover and surface repo conventions
-
-Before dispatching any worker, check for conventions files at the project root:
-
-```bash
-for f in CLAUDE.md AGENTS.md .cursor/rules .cursorrules; do
-  [ -f "$f" ] && echo "Found: $f"
-done
-```
-
-If found:
-- Read each file in full
-- Extract any conventions that affect workers: test commands, commit format, linter commands, forbidden patterns, file ownership rules
-- Cross-check against acceptance criteria in Wave 0 step files — if a step's criteria use a command that conflicts with the repo conventions (e.g., bare `pytest` vs `uv run pytest`), fix the step file before dispatching
-- Include the conventions file path(s) in every worker task under "Files to read before starting"
-
-If not found: proceed normally. Workers will self-check as part of their own pre-flight.
+`execute-wave.js` requires a clean source checkout (worktree isolation refuses otherwise). Commit or stash with the human's approval; never drop isolation.
 
 ---
 
 ## Reading the Plan
 
-### What to read first
+Read only PROGRESS.md at the start: status, wave map, dependencies, executor tier. Do not pre-read all step files.
 
-Read ONLY `PROGRESS.md` at the start. Do not pre-read all step files — this wastes context and gives you information you don't need yet.
-
-From PROGRESS.md, extract:
-1. Current status (which steps are done, which are next)
-2. Wave map (which steps can run in parallel)
-3. Dependency table (what blocks what)
-4. Orchestrator protocol (any plan-specific instructions)
-5. Subagent contract (what format workers report back in)
-
-### Resuming a partial execution
-
-If some steps are marked complete (`[x]`) in PROGRESS.md:
-1. Verify the completed steps by checking their commit messages in git log
-2. Identify the current wave (first wave with incomplete steps)
-3. Resume from there
-
-Never re-run completed steps. If a completed step's output is missing (e.g., commit was reverted), investigate first before re-running.
+**Resuming:** verify completed steps against `git log`, resume at the first incomplete wave. Never re-run a completed step; if its commit is missing, investigate before re-running.
 
 ---
 
-## Dispatch Strategy
+## Choosing the Dispatch
 
-### Parallel batch rules — run these IN PARALLEL
+- **Dependent / structural step** → `execute-step.js`, one step per invocation. The step boundary is the human checkpoint.
+- **Wave of independent atomic steps with no file overlap** → `execute-wave.js`. Check overlap at file/directory level, not description level; overlapping steps run through `execute-step.js` sequentially.
+- **N independent similar units with no ordering** (N PRs to rebase, N modules) → no plan machinery; dispatch one strong worker per unit, then `stack-ci-gate.js` if the units form a stack.
 
-- All steps in the same wave with no inter-step dependencies
-- Steps that touch entirely different files (no overlap)
-- Steps that are independent by the dependency table in PROGRESS.md
-
-**Max parallel workers:** 5-6 in a single batch. Beyond this, coordination overhead and context window pressure on the executor outweigh the speed gains.
-
-### Sequential rules — run these ONE AT A TIME
-
-- Steps in different waves (later wave depends on earlier wave output)
-- Steps that share files (even if not explicitly dependent — concurrent writes cause conflicts)
-- Any step flagged as "sequential" in PROGRESS.md
-- Any step after a failure in the current wave (stop and assess before continuing)
-
-### Decision heuristic
-
-```
-If wave has N steps and all are independent:
-  → dispatch all N in parallel (up to 6)
-  → wait for all to complete
-  → dispatch N reviewers in parallel
-  → wait for all reviewer verdicts
-  → advance to next wave
-
-If any step in wave depends on another step in the same wave:
-  → run the dependency first, then the dependent
-  → the rest of the wave can run in parallel around them
-```
-
-
-**Context mode:** Default is fresh — all context a worker needs is passed explicitly in the task string (project path, step file, acceptance criteria, git instructions). Use `context: "fork"` when the executor has built up significant shared context during pre-flight or wave execution that multiple workers would all need — forking avoids re-serializing that context into every task string. Do not fork reviewers: they must judge the commit independently and should not be influenced by executor notes or prior wave history.
----
-
-## Worker Task Anatomy
-
-Every worker task must include:
-
-```
-**Project:** <absolute path to repo>
-
-**Your task:** Step NN — <name>
-Read the full step file at: <absolute path to step file>
-
-**Context:**
-<2-4 sentences of why this step matters and what the overall goal is>
-Do NOT include information about other steps or the full plan.
-
-**Files to read before starting:**
-- `<path>` — <why>
-- `<path>` — <why>
-
-**Acceptance criteria (must ALL pass before reporting complete):**
-- `<exact command>` exits 0
-- `<exact command>` output contains `<string>`
-
-**Git instructions:**
-Commit your changes with message: "step-NN: <name>"
-Work in the current branch. Do not create a new branch.
-
-**Report back:**
-On success: "Step NN complete ✅ (commit <hash>)"
-On failure: "Step NN FAILED: <what failed> — <what was tried>"
-Do not report partial completion. Either all acceptance criteria pass, or it's a failure.
-```
-
-**Do not:**
-- Include the full PROGRESS.md in every worker task
-- Include step files for other waves
-- Include your executor notes or failure history (unless directly relevant)
-
-**Observed from sessions:** The agent-rules refactor session passed exactly the phase items verbatim from the master plan to each worker, plus the acceptance criteria (build+test pass). Workers executed cleanly without asking clarifying questions. Context was minimal but complete.
+Pass `args.tier` only to override the plan's executor tier. `fast` requires `wf-flash-worker` to be enabled; otherwise the launch fails with an unknown-agent error — do not silently fall back.
 
 ---
 
-## Reviewer Task Anatomy
+## Ledger Duty (non-delegable)
 
-Every reviewer task must include:
+After **every** workflow return and **before** dispatching the next step, apply the returned `ledger` object to PROGRESS.md yourself, using the `step-contract` row grammar:
 
-```
-**Project:** <absolute path to repo>
+- each `deferred[]` entry → an `open` row in "Tech debt / deferred gates"
+- each `proxies_used[]` entry → note it with the gate row; a proxy without a deferred real-gate row is a ledger gap — add the row
+- `decisions_taken[]` → "Decisions taken"; `pending_decisions[]` → "Pending decisions (human)"
+- mark the step `[x]` with its commit
 
-**Your task:** Review Step NN — <name>
-
-**What was implemented:**
-<2-3 sentences describing what the worker did and what files were changed>
-
-**Commit to review:** <hash> (run `git show <hash>` to see changes)
-
-**Focus areas:**
-- <specific thing to check>
-- <specific thing to check>
-
-**Acceptance criteria to verify:**
-Run these commands verbatim:
-1. `<exact command>` — must exit 0
-2. `<exact command>` — must output `<string>`
-3. Check `<file>:<line>` implements `<what>`
-
-**Report format:**
-PASS — confirm each criterion explicitly:
-  ✅ Criterion 1: `<command>` exited 0
-  ✅ Criterion 2: output contained "<string>"
-  ✅ Criterion 3: <file>:<line> correctly implements <what>
-
-FAIL — be specific:
-  ❌ Criterion 2: output was "<actual output>", expected "<expected output>"
-  ❌ <file>:<line> — <what's wrong> — expected: <what should be there>
-```
-
-**Never ask the reviewer to "look at the code and see if it's good."** Reviewers must run commands and check specific locations. Judgment calls without evidence produce false passes.
-
-**Model for reviewers:** Use standard tier, medium thinking — whatever model your harness binds to that tier. If standard tier has no explicit mapping in this environment, use a capable general-purpose model in that spirit rather than the cheapest available. Do not raise above medium thinking — per-task cost inverts past that point without a reliability gain, regardless of which model backs the tier. The reviewer must reason carefully about correctness, not just check syntax.
+Never delegate ledger writes to a child. Never write `discharged` without the commit where the real gate ran. Never write `waived by …` unless the human wrote it or explicitly told you to, quoting them. No one — you included — judges a deferred gate "insignificant".
 
 ---
 
-## Execute → Test → Review → Verify Loop
+## Wave Integration (after `execute-wave.js`)
 
-For each step:
+Committed lanes are retained on branches `pi-subagents/<key>-…`; the exact branch is in `<lane.asyncDir>/handoff.json` at `groups[0].children[0].patch.branch`. For each `PASS` lane, in step order:
 
-```
-1. Dispatch worker
-2. Worker completes or fails
-   → If failed: see Failure Handling below
-   → If complete: continue
+1. Merge (or cherry-pick) the lane branch onto the working branch.
+2. Mechanical conflict (imports, ordering) → resolve or dispatch a worker with both commits. Real logic conflict → do not auto-merge; revert, serialize those steps via `execute-step.js`, record the dependency the plan missed under "Decisions taken", tell the human.
+3. After all merges, re-run every merged step's sidecar gates on the integrated tree. Lanes passed in isolation; only the integrated run proves the wave.
+4. Apply ledgers, then remove each lane's worktree before its branch (a branch checked out in a worktree cannot be deleted): `git worktree remove --force <path>` (paths from `git worktree list`), then `git branch -D <lane branch>`.
 
-3. Dispatch reviewer with commit hash from worker report
-4. Reviewer returns PASS or FAIL
-   → If PASS: mark step complete in PROGRESS.md, advance
-   → If FAIL: dispatch worker again with reviewer feedback (iteration 1)
-
-5. If worker iteration 1 fails reviewer:
-   → Dispatch worker again with full feedback from both reviewer rounds (iteration 2)
-   
-6. If worker iteration 2 fails reviewer:
-   → STOP. Escalate to user with:
-     - Step file
-     - All reviewer feedback
-     - What the worker tried each time
-     - Your assessment of the blocker
-```
-
-**Max iterations:** 2-3 per step. Beyond this, the step file itself likely has a problem (wrong acceptance criteria, missing context, incorrect implementation target). Fix the step file or escalate — do not spin workers indefinitely.
-
-**Observed from sessions:** The agent-rules session used `CHAIN[worker → worker → code-reviewer]` for phases requiring iteration. The executor self-diagnosed failures (mock format bug, path bug) between iterations rather than blindly retrying.
-
----
-
-## Progress Reporting Format
-
-After each wave completes, report to the user:
-
-```
-## Wave N Complete ✅
-
-Steps completed:
-- Step NN (commit abc1234): <one-line description of what changed>
-- Step NN+1 (commit def5678): <one-line description>
-
-Reviewers: all passed
-
-Next: Wave N+1 — <description of what's coming>
-```
-
-After a blocker:
-```
-## Blocked ⛔
-
-Step NN failed after 3 iterations.
-
-Reviewer feedback (round 3):
-<paste specific failure>
-
-What was tried:
-<brief summary of each iteration's approach>
-
-Assessment: <your diagnosis of why this isn't working>
-
-Options:
-1. <suggested resolution>
-2. <alternative>
-
-Waiting for your direction.
-```
-
-**Rule:** One status report per wave completion. Do not micro-report every tool call or file read. Users want signal, not noise.
+`FAIL` lanes: re-run individually through `execute-step.js` (it has fix rounds).
 
 ---
 
 ## Failure Handling
 
-### Worker reports failure
+- `state: BLOCKED` (sidecar unreadable, unknown tier) → fix the plan artifact, re-run.
+- `state: FAIL, stage: implement` → the runtime or the worker's own verdict failed a gate. Read `acceptance`/`verdict` before retrying; environmental issue → fix and re-run; wrong gate/step → amend step file + sidecar, record the change, re-run.
+- `state: FAIL, stage: review|fix` → fix rounds are exhausted. **Stop and escalate** with the step file, the final REVIEW-VERDICT verbatim, and your diagnosis.
+- Workflow/launch/extension failure → infrastructure blocker. Report the exact error, run id and repo state; do not switch execution mode.
 
-1. Read the failure reason carefully
-2. If it's a clear environmental issue (missing dependency, wrong path): fix it locally and retry the same worker
-3. If it's an implementation problem: dispatch new worker with the failure as additional context
-4. If it's a spec problem (the step file is wrong): amend the step file and retry
+Escalate immediately when: a wave has 3+ failing steps with no common fix; a change breaks tests the step never mentioned; the codebase diverges from plan assumptions; an irreversible action (migration, external API) looks wrong.
 
-### Reviewer reports failure
+**Fix locally:** wrong paths, sidecar command syntax that contradicts repo conventions, missing deps. **Escalate:** acceptance criteria wrong for the requirement, unmodeled dependencies, repeated failures with different root causes, anything touching production data.
 
-1. Pass the full reviewer feedback to the next worker iteration as context
-2. Do not summarize or interpret reviewer feedback — pass it verbatim
-3. The worker needs to see exactly what failed and what was expected
+---
 
-### Git conflicts
+## Terminal Gate
 
-When worker commits conflict with sibling workers from the same wave:
+The plan is complete **only** when `terminal-gate.js` returns `ok: true` (pass `args.pr` when a PR exists). If it returns `ok: false`, report the listed open steps / rows / CI state verbatim (an open step means execute it, not ask the human) and ask the human to discharge or waive each one. Do not report completion, do not soften the wording, do not write waivers yourself.
+
+---
+
+## Reporting
+
+One report per step or wave, plus immediately on any blocker:
 
 ```
-If conflict is mechanical (whitespace, imports, line ordering):
-  → Dispatch a merge-worker with both conflicting commits and instructions to resolve
-  
-If conflict reveals actual dependency (both workers modified the same logic):
-  → Do NOT auto-merge
-  → Revert the second commit, fix the dependency ordering in the plan, re-run sequentially
-  → Report to user: "Wave N had a dependency conflict. Plan updated and re-running."
+Step 07 PASS (commit abc1234): <one line>. Ledger: 1 deferred (G-integ, owed by step-12).
+Next: step 08.
 ```
 
-**Pattern:** Orchestrator merges when no conflicts, delegates to a subagent when conflicts. Follow this pattern exactly.
+```
+## Blocked ⛔ Step NN — review failed after 2 fix rounds
+Reviewer verdict: <verbatim findings>
+Assessment: <diagnosis>
+Options: 1. … 2. …
+```
 
-### Severe derailment
-
-Stop and escalate immediately if:
-- A wave produces 3+ failing steps with no clear common fix
-- A worker's changes break passing tests that the step file didn't mention
-- The codebase state diverges from what the plan assumed (e.g., a file was deleted)
-- You're about to make irreversible changes (data migration, external API calls) and something seems wrong
-
----
-
-## Note-Taking: What Warrants Escalation vs. Local Fix
-
-**Fix locally (do not bother the user):**
-- Wrong file path in a worker task (fix the path, retry)
-- Missing import that the step file didn't mention (fix it)
-- Test command syntax wrong in acceptance criteria (correct and retry)
-- Minor linting issues a worker missed (fix directly)
-
-**Escalate to user:**
-- Acceptance criteria in the step file appear to be incorrect for the actual requirement
-- A step's implementation approach conflicts with code you've now read (step file had wrong facts)
-- A dependency exists that the plan didn't model (step N actually needs step M first)
-- Multiple iterations fail with different root causes (suggests a deeper problem)
-- Any change that affects production data or external systems unexpectedly
-
----
-
-## Git Workflow
-
-**Standard pattern:**
-- Workers commit to the current branch (do not create new branches per step)
-- Commit message format: `step-NN: <name>`
-- After each wave: no merge needed (all in same branch)
-- After all waves complete: one final review commit "Plan complete: <objective>"
-
-**Worktree pattern (when user specifies):**
-- Each worker gets their own git worktree for full isolation
-- Use `subagent(tasks: [...], worktree: true)` to get isolated worktrees
-- Orchestrator merges worktrees after wave completes
-- Observed in: agent-rules session (user explicitly said "use worktrees if needed for isolation")
-- Use worktrees when: parallel steps touch overlapping directories, risk of uncommitted state leaking between workers
-
----
+Completion report: all commits, the terminal-gate JSON, and any pending human decisions.
 
 ## Context Discipline
 
-**Down to workers:** Project path, step reference, step-specific context, acceptance criteria, git instructions, report format
-
-**Up from workers:** Completion status, commit hash, critical observations only
-
-**Stays local (executor only):** Wave map, dependency table, failure history, patterns across multiple worker failures, your running notes
-
-**Never down to workers:** Full PROGRESS.md, other workers' tasks, your executor notes, previous waves' step files
-
-**Context rotation:** As waves progress and context grows, drop old wave information. You only need the current wave's step files active. Previous waves are captured in git — you don't need them in context.
-
----
-
-## Checkpoint Reporting to User
-
-The user launched you and walked away. Check in with them at:
-
-1. **End of each major phase/wave** (especially Wave 0 which is often the riskiest)
-2. **After first reviewer pass** (confirms the loop is working correctly)
-3. **Any blocker** (immediately)
-4. **Completion** (with summary of all commits made)
-
-**Checkpoint format:**
-```
-Wave 1/4 complete. 3 steps, all passed review. (commits: abc, def, ghi)
-Starting Wave 2: functional bug fixes (parallel, 4 steps).
-All green so far.
-```
-
-Keep it brief. Users want to know if they need to intervene, not a transcript of what happened.
+Keep in your context: the wave map, current step, returned ledgers, failure history. Drop finished waves — git and PROGRESS.md hold them. Children get only what the workflow passes them; never paste PROGRESS.md or other steps into a task.

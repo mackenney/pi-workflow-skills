@@ -13,8 +13,8 @@ investigate → spec → plan → execute → fact-check / e2e-test → code-rev
 | `investigator` | Deploys parallel scout agents to gather ground-truth facts before any planning. Produces a structured findings report. |
 | `specifier` | Writes the behavioral contract of a component (RFC 2119 MUST/SHOULD/MAY). Permanent codebase artifact that informs planners and reviewers. |
 | `planner` | Produces a wave-based `PROGRESS.md` + per-step files from investigation findings. Each step has layered context and observable acceptance criteria. |
-| `executor` | Executes a `PROGRESS.md` plan by dispatching worker-reviewer pairs in parallel waves, managing the verify cycle, escalating blockers, and tracking progress via git commits. |
-| `worker-reviewer` | Internal roles loaded by the executor. Defines the adversarial Worker (implements, self-validates) and Reviewer (verifies without reimplementing) pair with a max-iteration fuse. |
+| `executor` | Drives a `PROGRESS.md` plan through `workflows/execute-step.js` / `execute-wave.js`, applies each returned ledger, integrates wave branches, and reports completion only when `terminal-gate.js` passes. |
+| `step-contract` | Shared vocabulary for planners, workers, reviewers and fact-checkers: gate classes, sidecar schema, STEP/REVIEW-VERDICT, PROGRESS.md ledger grammar. |
 | `fact-checker` | Verifies claims in any document — code reviews, investigation reports, plans, or specs — against source code, experiments, docs, git history, and web. Outputs CONFIRMED/REFUTED/UNVERIFIABLE verdicts. |
 | `e2e-tester` | Exercises a spec-driven implementation end-to-end against a running stack, working narrow-to-wide until the integration surface is covered. Stops and reports on blockers rather than looping. |
 | `code-reviewer` | Competitive multi-agent code review. Three independent reviewers analyze changes in parallel, then a synthesis pass produces actionable feedback. |
@@ -66,7 +66,7 @@ e2e-tester
 |-------|-------------|
 | `investigator -> fact-checker -> fix` | Scout agents map the codebase; fact-checker verifies the findings report; a fixer subagent corrects any REFUTED or PARTIAL claims before planning begins. |
 | `specifier -> planner -> fact-checker -> fix` | Specifier writes the behavioral contract; planner produces `PROGRESS.md`; fact-checker audits the plan for inaccuracies; fixer patches anything confirmed wrong. |
-| `executor` | Dispatches worker-reviewer pairs in waves per the plan, tracking progress via git commits. |
+| `executor` | Runs each step/wave through the execute workflows (runtime-executed gates, typed verdicts), applies ledgers, then the terminal gate. |
 | `(code-reviewer -> fact-checker -> fix) x3` | Up to three review rounds: three parallel reviewers synthesize a diff critique; fact-checker audits the review claims against source; fixer addresses confirmed blockers. Stops early after 2 consecutive clean rounds. |
 | `e2e-tester` | Exercises the implementation against a running stack, narrow-to-wide, and reports any spec gaps or integration failures. |
 

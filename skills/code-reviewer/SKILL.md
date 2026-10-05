@@ -50,7 +50,7 @@ Default: cross-examination runs. Skip it for small diffs, low-stakes changes, or
 
 ## Subagent Mechanism
 
-Dispatch instructions below state intent, not call syntax: how many children, what role, what context. Translate into your harness's own subagent primitive.
+Dispatch instructions below state intent, not call syntax: how many children, what role, what context. `workflows/review-factcheck-fix.js` owns the actual dispatch (`wf-code-reviewer` angles → optional cross-exam → synthesis under a typed `classify-review.sh` gate → `wf-fact-checker` → fix loop); `args.diversityModel` opts one angle into a cross-vendor model allow-listed by `modelScope`. Model binding lives in agent `tier:` frontmatter, not here.
 
 Reviewers, cross-exam agents, and synthesis are each one batch — children run in parallel within a batch, and every child starts fresh, never forked or sharing session history. Competitive review depends on that independence.
 
@@ -290,7 +290,7 @@ Remember: Quality > Quantity. Find issues that truly matter.
 
 **Execute three reviews in parallel:**
 
-Send a single `subagent(tasks: [...])` call with all three review tasks:
+Issue all three review tasks together in one parallel batch:
 - Reviewer 1: Focus on security and correctness
 - Reviewer 2: Focus on performance and design
 - Reviewer 3: Focus on maintainability and testing
@@ -830,9 +830,7 @@ Expand review criteria in prompts:
 - Include examples of issues to catch
 
 **Q: Reviews take too long**
-- Use fast tier for reviewers (faster) — whatever model your harness binds to that tier; if unmapped, use a cheap, low-latency model in that spirit.
 - Limit diff size (review in chunks)
-- Use standard tier (medium thinking) for synthesis only — whatever model your harness binds to that tier; if unmapped, use a capable general-purpose model in that spirit.
 - Pass `no-x-check` to drop Step 3.5 entirely: N+1 calls instead of 2N+1, at the cost of losing inter-reviewer dispute resolution before synthesis.
 
 **Q: Want different number of reviewers**

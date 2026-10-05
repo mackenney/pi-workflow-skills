@@ -9,7 +9,7 @@ You are playing the **Fact-Checker** role. Your job is to take a context contain
 
 ## Subagent Mechanism
 
-Every "dispatch a checker" / "spawn a tiebreaker" below states intent, not call syntax: one subagent per checker, a cluster's checkers issued together in parallel with fresh independent context, and a single frontier-tier tiebreaker child. Translate into your harness's own subagent primitive.
+Every "dispatch a checker" / "spawn a tiebreaker" below states intent, not call syntax: one `wf-fact-checker` child per checker, a cluster's checkers issued together in parallel with fresh independent context, and one second fresh `wf-fact-checker` run as tiebreaker. For plan and review fact-checks, `workflows/plan-factcheck-fix.js` and `workflows/review-factcheck-fix.js` own dispatch and gating; do not improvise `subagent(...)` calls for those. Model binding lives in agent `tier:` frontmatter, not here.
 
 ## When to Use
 
@@ -149,7 +149,7 @@ Identified 4 clusters:
 
 ### Step 4: Dispatch Parallel Checker Agents
 
-For each cluster, spawn a parallel checker agent. Use `subagent(tasks: [...])` with all clusters in one call.
+For each cluster, spawn a parallel checker agent — all clusters issued together in one parallel batch.
 
 **Context mode:** Use `context: "fork"` if the parent session has done significant codebase preparation the checkers need. Use fresh (default) for independent clusters checking unrelated subsystems.
 
@@ -357,7 +357,7 @@ For each claim, compare the two verdicts:
 
 ### Tiebreaker
 
-For each DISPUTED claim, dispatch a single **frontier-tier** tiebreaker agent — whatever model your harness binds to that tier. If frontier tier has no explicit mapping in this environment, use the strongest available reasoning model in that spirit. Pass it:
+For each DISPUTED claim, dispatch a second, fresh `wf-fact-checker` run (never a resume). If the claim is still DISPUTED after it, do not tiebreak further: record it as a **Pending decisions (human)** row in PROGRESS.md (see `step-contract`). Pass the tiebreak run:
 - The claim
 - Both checker outputs in full (verdicts + evidence)
 - Instruction: "Break the tie. Read the evidence from both agents, then independently verify the claim using the highest available evidence tier. Return a single verdict with your own evidence."

@@ -4,6 +4,9 @@
   "description": "Agentic workflow skills for pi: investigate, spec, plan, orchestrate, implement, and review",
   "keywords": ["pi-package"],
   "pi": {
-    "skills": ["./skills"]
-  }
+    "skills": ["./skills"],
+    "prompts": ["./prompts"],
+    "subagents": { "agents": ["./agents"] }
+  },
+  "scripts": { "tiers": "node scripts/generate-tier-overrides.mjs" }
 }
