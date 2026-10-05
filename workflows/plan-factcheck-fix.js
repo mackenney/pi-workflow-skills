@@ -1,4 +1,5 @@
-// args: { spec: "/abs/spec.md", planDir: "/abs/plans/x", tier?: "deep"|"standard"|"fast"|"frontier",
+// Returns the stage envelope; full result in <stageDir>/result.json (stageDir defaults under <planDir>/runs/).
+// args: { spec: "/abs/spec.md", planDir: "/abs/plans/x", stageDir?: "/abs/run/NN-plan", tier?: "deep"|"standard"|"fast" (planning effort; step tiers are validated separately),
 //         mode?: "structural"|"simple", angles?: number|[], maxSynthRounds?: 3 }
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Gate commands run through the host shell, so the env override expands there (isolated test installs set it).
@@ -8,6 +9,8 @@ const angles = Array.isArray(args.angles) ? args.angles : (args.angles ? Array.f
 const tier = args.tier ?? "deep";
 const simple = args.mode === "simple" || angles.length === 0;
 
+let result = null;
+main: {
 // 1. Planning angles (skipped in simple mode).
 let angleOutputs = [];
 if (!simple) {
@@ -27,7 +30,7 @@ if (!simple) {
   );
   // Pass paths, never child text: the synthesizer reads the files (r.output is the child's final message).
   angleOutputs = planRuns.map((r, i) => ({ angle: angles[i], ok: r.ok, output: args.planDir + "/angle-" + angles[i] + "/plan-summary.md", runId: r.runId, error: r.error }));
-  if (!angleOutputs.some((a) => a.ok)) return { state: "FAIL", stage: "angles", errors: angleOutputs.map((a) => a.error) };
+  if (!angleOutputs.some((a) => a.ok)) { result = { state: "FAIL", stage: "angles", errors: angleOutputs.map((a) => a.error) }; break main; }
 }
 
 const VALIDATE_SCHEMA = {
@@ -75,7 +78,7 @@ while (true) {
   if (validation && validation.ok === true) break;
   round += 1;
   if (round >= maxSynth) {
-    return { state: "FAIL", stage: "synth", round, validation, error: synth.error };
+    { result = { state: "FAIL", stage: "synth", round, validation, error: synth.error }; break main; }
   }
 }
 
@@ -97,7 +100,7 @@ let fc = await runs.run("factcheck-0", {
 let fcClass = fc.structuredOutput; // typed gate's parsed stdout
 // Fail closed: an unusable report (classifier error, no claims, failed run) is not a clean fact-check.
 const fcUnusable = (run, cls) => !run.ok || !cls || cls.error || !(cls.total > 0);
-if (fcUnusable(fc, fcClass)) return { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error };
+if (fcUnusable(fc, fcClass)) { result = { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error }; break main; }
 
 // 4. If refuted+partial > 0: one builtin-worker fix pass, then a second fact-check round.
 if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
@@ -111,7 +114,7 @@ if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
     }
   });
   if (!fix.ok || !fix.structuredOutput || fix.structuredOutput.ok !== true) {
-    return { state: "FAIL", stage: "plan-fix", planPath: planOutputPath, factcheckPath, validation: fix.structuredOutput, error: fix.error };
+    { result = { state: "FAIL", stage: "plan-fix", planPath: planOutputPath, factcheckPath, validation: fix.structuredOutput, error: fix.error }; break main; }
   }
   factcheckPath = args.planDir + "/factcheck-1.json";
   fc = await runs.run("factcheck-1", {
@@ -123,13 +126,30 @@ if (fcClass && (fcClass.refuted > 0 || fcClass.partial > 0)) {
     }
   });
   fcClass = fc.structuredOutput;
-  if (fcUnusable(fc, fcClass)) return { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error };
+  if (fcUnusable(fc, fcClass)) { result = { state: "FAIL", stage: "factcheck", planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, error: fcClass?.error ?? fc.error }; break main; }
 }
 
 // DISPUTED claims are not defects the worker can fix; they go to the human (step-contract "Pending decisions").
 const pendingDecisions = (fcClass && fcClass.disputed > 0) ? [fcClass.disputed + " disputed fact-check claim(s) - see " + factcheckPath] : [];
 
-return {
+result = {
   state: fcClass && fcClass.refuted === 0 && fcClass.partial === 0 ? "PASS" : "FAIL",
-  planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, pendingDecisions
+  planPath: planOutputPath, factcheckPath, factcheckClass: fcClass, pendingDecisions, angles: angleOutputs
 };
+}
+
+// Tail: persist, return the envelope. Open Decisions written by the planners/synthesizer live in PROGRESS.md.
+const stageDir = args.stageDir ?? (args.planDir + "/runs/" + new Date().toISOString().replace(/[:.]/g, "-") + "-plan");
+const actionables = [];
+for (const p of result.pendingDecisions ?? []) actionables.push({ what: p, kind: "decision", ref: result.factcheckPath });
+if (result.state === "PASS") actionables.push({ what: "check PROGRESS.md Open Decisions before executing", kind: "info", ref: args.planDir + "/PROGRESS.md#open-decisions" });
+else actionables.push({ what: (result.stage ?? "plan") + ": " + (result.error ?? (result.validation?.errors ?? []).slice(0, 3).join("; ") ?? "see result.json"), kind: "fix", ref: stageDir + "/result.json" });
+const fcC = result.factcheckClass;
+const summary = result.state === "PASS"
+  ? "plan PASS: validate-plan ok; fact-check " + (fcC ? fcC.total + " claims, " + fcC.refuted + " refuted, " + fcC.partial + " partial, " + fcC.disputed + " disputed" : "n/a") + "."
+  : "plan FAIL at " + (result.stage ?? "?") + ".";
+const status = result.state !== "PASS" ? "failed" : (result.pendingDecisions ?? []).length ? "needs-decision" : "done";
+const envelope = { stage: "plan", status, summary, actionables, artifacts: { primary: result.planPath ?? planOutputPath, details: [stageDir + "/result.json", ...(result.factcheckPath ? [result.factcheckPath] : [])] } };
+await runs.run("persist", { agent: "wf-host-command", label: "Persist plan result",
+  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) });
+return envelope;

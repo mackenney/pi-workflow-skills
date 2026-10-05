@@ -1,7 +1,10 @@
-// args: { stepFile: "/abs/plans/x/step-07-name.md", planDir: "/abs/plans/x", baseCommit: "abc123",
+// args: { stepFile: "/abs/plans/x/step-07-name.md", planDir: "/abs/plans/x", baseCommit?: "abc123", stageDir?: "/abs/run/NN-execute",
 //         tier?: "deep"|"standard"|"fast", worker?: "<agent name>", pr?: 123, maxFixRounds?: 2, ledgerFile?: "PROGRESS.md" }
+// Returns the stage envelope {stage, status, summary, actionables, artifacts} (skills/coordinator/SKILL.md); the full
+// result goes to <stageDir>/result.json and the envelope to <stageDir>/brief.json.
+// Ledger: once the review passes, this workflow applies the typed verdict to <planDir>/<ledgerFile> through the
+// ledger-apply host script (step-contract grammar). Neither the parent nor a model edits ledger rows.
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
-// Ledger authority: the parent session applies the returned `ledger` to <planDir>/<ledgerFile>. Mission state is a mirror.
 
 // Tier -> agent. Models are NOT named here; each agent's model comes from the generated agentOverrides (§3.2).
 const WORKER_BY_TIER = {
@@ -44,17 +47,23 @@ const REVIEW_VERDICT = {
 
 const ledgerPath = args.planDir + "/" + (args.ledgerFile ?? "PROGRESS.md");
 const sidecar = args.stepFile.replace(/\.md$/, ".gates.json");
+const stepName = (args.stepFile.split("/").pop() || "step").replace(/\.md$/, "");
+const stageDir = args.stageDir ?? (args.planDir + "/runs/" + new Date().toISOString().replace(/[:.]/g, "-") + "-" + stepName);
+
+// Every exit sets `result` and leaves the block; the tail applies the ledger, persists details and returns the envelope.
+let result = null;
+main: {
 
 // 1. Load the planner-authored gate sidecar mechanically (typed step; no LLM transcription).
 const loaded = await runs.run("gates", { agent: "wf-host-command", label: "Load step gates", task: JSON.stringify({ script: "step-loader", stepFile: args.stepFile }) });
-if (!loaded.ok) return { state: "BLOCKED", reason: "gate sidecar unreadable", error: loaded.error };
+if (!loaded.ok) { result = { state: "BLOCKED", reason: "gate sidecar unreadable", error: loaded.error }; break main; }
 let contract = null; // { step, tier, base_commit?, gates:[{id,class,cmd,timeoutMs,proxy?,result?}], coverage:[...], hard_splits_declared:[...] }
 try { contract = JSON.parse(loaded.output); } catch (e) { contract = null; }
-if (!contract || contract.error || !Array.isArray(contract.gates)) return { state: "BLOCKED", reason: "gate sidecar unusable", error: contract?.error ?? "no gates array in " + sidecar };
+if (!contract || contract.error || !Array.isArray(contract.gates)) { result = { state: "BLOCKED", reason: "gate sidecar unusable", error: contract?.error ?? "no gates array in " + sidecar }; break main; }
 
 const tier = args.tier ?? contract.tier ?? "deep"; // deep is the trial default (RECOMMENDATIONS-v2 R1)
 const lane = WORKER_BY_TIER[tier];
-if (!lane) return { state: "BLOCKED", reason: "no worker lane for tier " + tier + " (lanes: " + Object.keys(WORKER_BY_TIER).join(", ") + "; frontier-sized steps must be split or planned as deep)" };
+if (!lane) { result = { state: "BLOCKED", reason: "no worker lane for tier " + tier + " (lanes: " + Object.keys(WORKER_BY_TIER).join(", ") + "; frontier-sized steps must be split or planned as deep)" }; break main; }
 const workerAgent = args.worker ?? lane.agent;
 const verify = contract.gates
   .filter((g) => g.cmd && g.result !== "n/a" && g.result !== "deferred") // deferred gates are owed by a later step and ledgered, not run here
@@ -64,10 +73,10 @@ const workerTask = [
   "Implement plan step " + contract.step + ".",
   "Step file: " + args.stepFile,
   "Gate sidecar: " + sidecar,
-  "Ledger (read-only for you): " + ledgerPath + " — report ledger rows in your verdict; the parent writes the file.",
+  "Ledger (read-only for you): " + ledgerPath + " — report ledger rows in your verdict; a script writes the file from it.",
   "Base commit for fails-before checks: " + (args.baseCommit ?? contract.base_commit ?? "HEAD"),
   // Without this the worker leaves changes uncommitted ("parent controls commits") and burns a fix round.
-  "Commit your work (scoped to the step's files) and report the sha in STEP-VERDICT.commit. The parent writes the ledger, not commits.",
+  "Commit your work (scoped to the step's files) and report the sha in STEP-VERDICT.commit. Do not edit the ledger.",
   "Executor tier: " + tier + ". Follow the step-contract skill exactly."
 ].join("\n");
 
@@ -87,8 +96,9 @@ let impl = await runs.run("implement", {
   acceptance: ACCEPTANCE
 });
 let verdict = impl.structuredOutput;
+if (impl.ok && verdict && verdict.verdict === "PASS" && !verdict.commit) verdict = { ...verdict, verdict: "FAIL", residual_risks: [...(verdict.residual_risks ?? []), "PASS without a commit sha"] };
 if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
-  return { state: verdict?.verdict ?? "FAIL", stage: "implement", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance };
+  { result = { state: verdict?.verdict ?? "FAIL", stage: "implement", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance }; break main; }
 }
 
 // 3. Independent review with typed verdict, then bounded fix rounds on the retained worker.
@@ -108,7 +118,7 @@ while (true) {
   const rv = review.structuredOutput;
   if (review.ok && rv && rv.verdict === "PASS") break;
   if (round >= maxFix || !impl.runId) {
-    return { state: "FAIL", stage: "review", round, review: rv, error: review.error, workerRunId: impl.runId };
+    { result = { state: "FAIL", stage: "review", round, review: rv, error: review.error, workerRunId: impl.runId }; break main; }
   }
   round += 1;
   impl = await runs.run("fix-" + round, {
@@ -125,7 +135,7 @@ while (true) {
   });
   verdict = impl.structuredOutput;
   if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
-    return { state: verdict?.verdict ?? "FAIL", stage: "fix", round, runId: impl.runId, verdict, error: impl.error };
+    { result = { state: verdict?.verdict ?? "FAIL", stage: "fix", round, runId: impl.runId, verdict, error: impl.error }; break main; }
   }
 }
 
@@ -139,9 +149,8 @@ if (args.pr !== undefined) {
   try { ci = ciRun.ok ? JSON.parse(ciRun.output) : { state: "unknown", error: ciRun.error }; } catch (e) { ci = { state: "unknown", error: "ci-gate output unparseable" }; }
 }
 
-// 5. Ledger delta. AUTHORITATIVE write: the parent session applies this object to <ledgerPath> (step-contract row grammar)
-//    before dispatching the next step. Every `deferred` entry becomes an `open` row that blocks the terminal gate until a
-//    human writes `discharged <commit>` or `waived by <name> <date>: <reason>`.
+// 5. Ledger delta, applied below by ledger-apply. Every `deferred`/proxy entry becomes an `open` row that blocks the
+//    terminal gate until a human writes `discharged <commit>` or `waived by <name> <date>: <reason>`.
 const ledger = {
   step: contract.step, commit: verdict.commit, ledgerPath, gates: verdict.gates,
   deferred: verdict.deferred, proxies_used: verdict.proxies_used,
@@ -152,4 +161,32 @@ const ledger = {
 if (typeof state !== "undefined") { try { await state.set("ledger." + contract.step, ledger); } catch (_) { /* mirror failure is not a step failure */ } }
 // Only green CI (or no PR) is PASS. red -> FAIL; pending/none/stale/unknown -> BLOCKED for the parent to resolve.
 const finalState = !ci || ci.state === "green" ? "PASS" : ci.state === "red" ? "FAIL" : "BLOCKED";
-return { state: finalState, ...(finalState === "PASS" ? {} : { stage: "ci" }), ledger, workerRunId: impl.runId, reviewRunId: review.runId };
+result = { state: finalState, ...(finalState === "PASS" ? {} : { stage: "ci" }), ledger, workerRunId: impl.runId, reviewRunId: review.runId };
+}
+
+// Tail: ledger, persisted details, envelope.
+const verdictOut = result.ledger ? null : result.verdict;
+let ledgerApply = null;
+if (result.ledger) {
+  // The review passed: record decisions/deferred rows; tick the step only when the step is PASS (CI included).
+  const la = await runs.run("ledger", { agent: "wf-host-command", label: "Apply ledger " + result.ledger.step,
+    task: JSON.stringify({ script: "ledger-apply", planDir: args.planDir, ledgerFile: args.ledgerFile, ledgers: [{ ...result.ledger, tick: result.state === "PASS" }] }) });
+  try { ledgerApply = la.ok ? JSON.parse(la.output) : { ok: false, errors: [la.error] }; } catch (e) { ledgerApply = { ok: false, errors: ["ledger-apply output unparseable"] }; }
+  if (!ledgerApply.ok && result.state === "PASS") result = { ...result, state: "BLOCKED", stage: "ledger" };
+}
+const L = result.ledger;
+const actionables = [];
+for (const p of L?.pending_decisions ?? []) actionables.push({ what: p, kind: "decision", ref: ledgerPath + "#pending-decisions-human" });
+for (const d of L?.deferred ?? []) actionables.push({ what: "deferred " + d.gate + " (owed by " + d.owed_by + ")", kind: "info", ref: ledgerPath + "#tech-debt--deferred-gates" });
+for (const e of ledgerApply?.errors ?? []) actionables.push({ what: "ledger-apply: " + e, kind: "fix", ref: ledgerPath });
+if (result.state !== "PASS") actionables.push({ what: (result.stage ?? "step") + ": " + (result.reason ?? result.error ?? (result.review?.findings?.[0]?.evidence) ?? (verdictOut?.residual_risks?.[0]) ?? (L?.ci ? "CI " + L.ci.state : "see result.json")), kind: "fix", ref: stageDir + "/result.json" });
+for (const rk of (L?.residual_risks ?? []).slice(0, 3)) actionables.push({ what: rk, kind: "info", ref: stageDir + "/result.json" });
+const status = result.state === "PASS" ? (actionables.some((a) => a.kind === "decision") ? "needs-decision" : "done") : result.state === "BLOCKED" ? "blocked" : "failed";
+const stepId = L?.step ?? stepName;
+const summary = result.state === "PASS"
+  ? stepId + " PASS @" + String(L.commit).slice(0, 7) + "; " + (L.gates ?? []).filter((g) => g.result === "pass").length + " gates passed; ledger " + (ledgerApply?.ok ? "applied" : "NOT applied") + "."
+  : stepId + " " + result.state + " at " + (result.stage ?? "?") + ".";
+const envelope = { stage: "execute-step", status, summary, actionables, artifacts: { primary: result.state === "PASS" ? ledgerPath : stageDir + "/result.json", details: [stageDir + "/result.json"] } };
+await runs.run("persist", { agent: "wf-host-command", label: "Persist " + stepId,
+  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: { ...result, ledgerApply } }, { path: stageDir + "/brief.json", json: envelope }] }) });
+return envelope;

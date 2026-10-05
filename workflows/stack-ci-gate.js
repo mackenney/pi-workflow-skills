@@ -5,7 +5,7 @@ if (!Array.isArray(args.prs) || args.prs.length === 0) return { ok: false, error
 const results = [];
 for (const pr of args.prs) {
   const run = await runs.run("ci-" + pr, {
-    agent: "wf-host-command", label: "CI for PR " + pr,
+    agent: "wf-host-command", label: "CI for PR " + pr, timeoutMs: 2100000,
     task: JSON.stringify({ script: "ci-gate", pr, repo: args.repo, waitSeconds: args.waitSeconds ?? 1800 })
   });
   let ci;

@@ -1,10 +1,11 @@
 // args: { planDir: "/abs/plans/x", stepFiles: ["/abs/plans/x/step-03-a.md", ...] (independent atomic steps of one wave),
-//         baseCommit?: "abc123", tier?: "standard"|"deep"|"fast", ledgerFile?: "PROGRESS.md" }
+//         baseCommit?: "abc123", tier?: "standard"|"deep"|"fast", ledgerFile?: "PROGRESS.md", stageDir?: "/abs/run/NN-execute" }
+// Returns the stage envelope; the lane board goes to <stageDir>/result.json (read by ledger-apply's fromResult).
 // One lane per independent step, each worker in its own managed git worktree (source checkout must be clean).
 // No fix rounds here: a failed lane is re-run by the parent through execute-step.js.
 // Integration is the PARENT's job: committed lanes are retained on branches `pi-subagents/<key>-...`, recorded in
 // <lane.asyncDir>/handoff.json (groups[0].children[0].patch.branch). Merge them, then re-run the wave's gates on the
-// merged tree before applying ledgers. Sandbox rules: top-level await only, no nested async fns, no fs.
+// merged tree, then apply the lane ledgers with ledger-apply {"planDir", "fromResult": "<stageDir>/result.json"}. Sandbox rules: top-level await only, no nested async fns, no fs.
 
 const WORKER_BY_TIER = {
   deep: { agent: "wf-structural-worker" },
@@ -45,7 +46,10 @@ const REVIEW_VERDICT = {
   }
 };
 
-if (!Array.isArray(args.stepFiles) || args.stepFiles.length === 0) return { state: "BLOCKED", reason: "args.stepFiles must be a non-empty array" };
+const stageDir = args.stageDir ?? (args.planDir + "/runs/" + new Date().toISOString().replace(/[:.]/g, "-") + "-wave");
+let result = null;
+main: {
+if (!Array.isArray(args.stepFiles) || args.stepFiles.length === 0) { result = { state: "BLOCKED", reason: "args.stepFiles must be a non-empty array" }; break main; }
 const ledgerPath = args.planDir + "/" + (args.ledgerFile ?? "PROGRESS.md");
 const keyOf = (f) => (f.split("/").pop() || f).replace(/\.md$/, "").replace(/[^A-Za-z0-9._-]/g, "-");
 
@@ -58,10 +62,10 @@ const contracts = [];
 for (let i = 0; i < loaded.length; i += 1) {
   let c = null;
   try { c = loaded[i].ok ? JSON.parse(loaded[i].output) : null; } catch (e) { c = null; }
-  if (!c || c.error || !Array.isArray(c.gates)) return { state: "BLOCKED", reason: "gate sidecar unusable for " + args.stepFiles[i], error: c?.error ?? loaded[i].error ?? "no gates array" };
+  if (!c || c.error || !Array.isArray(c.gates)) { result = { state: "BLOCKED", reason: "gate sidecar unusable for " + args.stepFiles[i], error: c?.error ?? loaded[i].error ?? "no gates array" }; break main; }
   // Same tier resolution and default as execute-step.js; an unknown tier blocks the wave instead of silently downgrading.
   const tier = args.tier ?? c.tier ?? "deep";
-  if (!WORKER_BY_TIER[tier]) return { state: "BLOCKED", reason: "no worker lane for tier " + tier + " in " + args.stepFiles[i] + " (lanes: " + Object.keys(WORKER_BY_TIER).join(", ") + ")" };
+  if (!WORKER_BY_TIER[tier]) { result = { state: "BLOCKED", reason: "no worker lane for tier " + tier + " in " + args.stepFiles[i] + " (lanes: " + Object.keys(WORKER_BY_TIER).join(", ") + ")" }; break main; }
   contracts.push({ ...c, _tier: tier });
 }
 
@@ -75,7 +79,7 @@ const workers = await runs.all(contracts.map((c, i) => {
     task: [
       "Implement plan step " + c.step + " (atomic, independent of the other steps in this wave).",
       "Step file: " + args.stepFiles[i], "Gate sidecar: " + args.stepFiles[i].replace(/\.md$/, ".gates.json"),
-      "Ledger (read-only for you): " + ledgerPath + " - report ledger rows in your verdict; the parent writes the file.",
+      "Ledger (read-only for you): " + ledgerPath + " - report ledger rows in your verdict; a script writes the file from it after integration.",
       "Base commit for fails-before checks: " + (args.baseCommit ?? c.base_commit ?? "HEAD"),
       "You are in an isolated git worktree. Commit your work there; report the commit sha in STEP-VERDICT.commit.",
       "Executor tier: " + tier + ". Follow the step-contract skill exactly."
@@ -118,4 +122,21 @@ const board = contracts.map((c, i) => {
                   decisions_taken: v.decisions_taken, pending_decisions: v.pending_decisions, residual_risks: v.residual_risks, review: rv } : null
   };
 });
-return { state: board.every((l) => l.state === "PASS") ? "PASS" : "PARTIAL", board };
+result = { state: board.every((l) => l.state === "PASS") ? "PASS" : "PARTIAL", board };
+}
+
+// Tail: persist the board, return the envelope. Ledgers are applied by the parent through ledger-apply after
+// merge + integrated re-gate (lanes passed in isolation only).
+const lanes = result.board ?? [];
+const actionables = [];
+for (const l of lanes.filter((x) => x.state === "PASS")) actionables.push({ what: "merge " + l.step + " @" + String(l.commit).slice(0, 7) + " (branch in handoff.json)", kind: "info", ref: l.asyncDir + "/handoff.json" });
+for (const l of lanes.filter((x) => x.state !== "PASS")) actionables.push({ what: l.step + " " + l.state + " at " + l.stage + ": re-run through execute-step.js", kind: "fix", ref: stageDir + "/result.json" });
+for (const l of lanes) for (const p of l.ledger?.pending_decisions ?? []) actionables.push({ what: l.step + ": " + p, kind: "decision", ref: stageDir + "/result.json" });
+if (!lanes.length) actionables.push({ what: result.reason ?? result.error ?? "wave blocked", kind: "fix", ref: stageDir + "/result.json" });
+const passN = lanes.filter((x) => x.state === "PASS").length;
+const status = result.state === "BLOCKED" ? "blocked" : passN === 0 ? "failed" : actionables.some((a) => a.kind === "decision") ? "needs-decision" : result.state === "PASS" ? "done" : "failed";
+const summary = result.state === "BLOCKED" ? "wave BLOCKED: " + (result.reason ?? "") : passN + "/" + lanes.length + " lanes PASS. Next: merge PASS lanes in step order, re-run their gates on the merged tree, then ledger-apply fromResult.";
+const envelope = { stage: "execute-wave", status, summary, actionables, artifacts: { primary: stageDir + "/result.json", details: [] } };
+await runs.run("persist", { agent: "wf-host-command", label: "Persist wave",
+  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) });
+return envelope;

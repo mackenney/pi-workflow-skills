@@ -1,6 +1,7 @@
 // args: { target: "diff/PR description, e.g. 'git diff main...HEAD in /abs/repo' or 'PR #67'", reviewDir: "/abs/plans/x/review",
 //         baseRef?: "<sha before the change>" (pins the review range across fix rounds), repo?: "/abs/repo", angles?: string[] | number, diversityModel?: "openai/gpt-6-sol",
-//         crossExam?: boolean, maxRounds?: 2 }
+//         crossExam?: boolean, maxRounds?: 2, stageDir?: "/abs/run/NN-review" (default: reviewDir) }
+// Returns the stage envelope; full result in <stageDir>/result.json.
 // Sandbox rules: top-level await only, no nested async fns, no fs. Everything file-based goes through children.
 // Models are NOT named here except the opt-in diversityModel lane; modelScope rejects any value not
 // allow-listed for wf-code-reviewer, so an unlisted model fails the launch rather than running silently.
@@ -25,9 +26,11 @@ const FC_CLASS_SCHEMA = {
   properties: { refuted: { type: "integer" }, partial: { type: "integer" }, disputed: { type: "integer" }, unverifiable: { type: "integer" }, total: { type: "integer" }, error: { type: "string" } }
 };
 
+let result = null;
+main: {
 const rounds = [];
 let final = null;
-if (!(maxRounds >= 1)) return { state: "BLOCKED", reason: "maxRounds must be >= 1", rounds };
+if (!(maxRounds >= 1)) { result = { state: "BLOCKED", reason: "maxRounds must be >= 1", rounds }; break main; }
 
 for (let round = 0; round < maxRounds; round += 1) {
   const dir = args.reviewDir + "/round-" + round;
@@ -68,7 +71,7 @@ for (let round = 0; round < maxRounds; round += 1) {
   }
   const failedAngles = angleRuns.map((r, i) => (r.ok ? null : { angle: angles[i], error: r.error })).filter(Boolean);
   if (failedAngles.length) {
-    return { state: "FAIL", stage: "angles", round, failedAngles, rounds };
+    { result = { state: "FAIL", stage: "angles", round, failedAngles, rounds }; break main; }
   }
   const anglePaths = angleOut;
 
@@ -107,7 +110,7 @@ for (let round = 0; round < maxRounds; round += 1) {
   });
   const reviewClass = synth.structuredOutput;
   if (!synth.ok || !reviewClass || reviewClass.error) {
-    return { state: "FAIL", stage: "synth", round, reviewClass, error: synth.error, rounds };
+    { result = { state: "FAIL", stage: "synth", round, reviewClass, error: synth.error, rounds }; break main; }
   }
 
   // Early stop before spending a fact-check: a clean synthesis has no findings to verify.
@@ -160,4 +163,19 @@ const last = rounds[rounds.length - 1];
 const pendingDecisions = last && last.fcClass && last.fcClass.disputed > 0
   ? ["disputed review claims - see " + last.fcPath] : [];
 
-return { ...final, rounds, pendingDecisions };
+result = { ...final, rounds, pendingDecisions };
+}
+
+// Tail: persist, return the envelope. The surviving findings are in the last round's synthesis/fact-check files.
+const stageDir = args.stageDir ?? args.reviewDir;
+const lastR = result.rounds?.[result.rounds.length - 1];
+const actionables = [];
+for (const p of result.pendingDecisions ?? []) actionables.push({ what: p, kind: "decision", ref: lastR?.fcPath ?? stageDir });
+if (result.state !== "PASS") actionables.push({ what: (result.stage ?? "review") + ": " + (result.reason ?? result.error ?? (result.failedAngles ? result.failedAngles.length + " angle(s) failed" : "see result.json")), kind: "fix", ref: lastR?.synthPath ?? stageDir + "/result.json" });
+const rc = lastR?.reviewClass;
+const summary = "review " + result.state + " after " + (result.rounds?.length ?? 0) + " round(s)" + (rc ? "; last synthesis: " + rc.blockers + " blockers, " + rc.important + " important" : "") + ".";
+const status = result.state === "PASS" ? ((result.pendingDecisions ?? []).length ? "needs-decision" : "done") : result.state === "BLOCKED" ? "blocked" : "failed";
+const envelope = { stage: "review", status, summary, actionables, artifacts: { primary: lastR?.synthPath ?? stageDir + "/result.json", details: [stageDir + "/result.json"] } };
+await runs.run("persist", { agent: "wf-host-command", label: "Persist review result",
+  task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: result }, { path: stageDir + "/brief.json", json: envelope }] }) });
+return envelope;

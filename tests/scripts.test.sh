@@ -162,6 +162,32 @@ check "vp: deferred gate with open row" '.ok == true' "$(vp)"
 check "vp: deferred gate needs owed_by" '.ok == false and any(.errors[]; test("owed_by"))' "$(vp_mut '.steps[0].gates[5] = {"id":"g-integ-1","class":"integ","result":"deferred"}' '.gates[5] = {"id":"g-integ-1","class":"integ","result":"deferred"}')"
 check "vp: First-Artifact on Dockerfile with proxy-only build" '.ok == false and any(.errors[]; test("First-Artifact"))' "$(vp_mut '.steps[0].files=["Dockerfile"] | .steps[0].gates[0] += {"proxy":true,"real_gate":"docker build ."} | .steps[0].gates[3] = {"id":"g-e2e-smoke-1","class":"e2e-smoke","result":"n/a","reason":"x"}' '.gates[0] += {"proxy":true,"real_gate":"docker build ."} | .gates[3] = {"id":"g-e2e-smoke-1","class":"e2e-smoke","result":"n/a","reason":"x"}')"
 
+# ledger-apply (ledger by script)
+LA="$T/la"; mkdir -p "$LA"
+printf '# P\n\n## Decisions taken\n\n## Pending decisions (human)\n\n' > "$LA/PROGRESS.md"
+ledger "$T/la-tail.md" "" "" $'## Steps\n- [ ] [step-01-x](./step-01-x.md) — x\n- [ ] [step-010-y](./step-010-y.md) — y'
+sed -n '3,$p' "$T/la-tail.md" >> "$LA/PROGRESS.md"
+LJ='{"planDir":"'"$LA"'","ledgers":[{"step":"step-01-x","commit":"abc1234def","decisions_taken":["used a | pipe"],"pending_decisions":["pick a name"],"deferred":[{"gate":"g-integ-1","class":"integ","owed_by":"step-09","reason":"slow"}],"proxies_used":[{"gate":"g-build-2","proxy_cmd":"bake --print","real_gate":"bake"}]}]}'
+out="$(echo "$LJ" | "$S/ledger-apply.sh")"
+check "ledger-apply: applies all" '.ok == true and .applied.decisions == 1 and .applied.pending == 1 and .applied.deferredRows == 2 and .applied.ticked == ["step-01-x"]' "$out"
+check "ledger-apply: tg sees the open rows, step-010 untouched" '.ok == false and (.openDeferred | length) == 2 and .openSteps == ["[step-010-y](./step-010-y.md) — y"]' "$(tg "$LA")"
+out="$(echo "$LJ" | "$S/ledger-apply.sh")"
+check "ledger-apply: idempotent" '.ok == true and .applied.decisions == 0 and .applied.deferredRows == 0 and .applied.ticked == []' "$out"
+grep -q '^- step-01-x @abc1234: used a | pipe$' "$LA/PROGRESS.md" && grep -q 'step-01-x.*\[x\].*\|\[x\].*step-01-x.* — abc1234' "$LA/PROGRESS.md" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: ledger-apply text"; cat "$LA/PROGRESS.md"; }
+echo '{"board":[{"state":"PASS","ledger":{"step":"step-010-y","commit":"def5678"}},{"state":"FAIL","ledger":{"step":"zzz"}}]}' > "$T/result.json"
+check "ledger-apply: fromResult PASS lanes" '.ok == true and .applied.ticked == ["step-010-y"]' "$(echo '{"planDir":"'"$LA"'","fromResult":"'"$T"'/result.json"}' | "$S/ledger-apply.sh")"
+check "ledger-apply: fromResult missing lane" '.ok == false' "$(echo '{"planDir":"'"$LA"'","fromResult":"'"$T"'/result.json","steps":["zzz"]}' | "$S/ledger-apply.sh")"
+check "ledger-apply: unknown step" '.ok == false and any(.errors[]; test("no checklist item"))' "$(echo '{"planDir":"'"$LA"'","ledgers":[{"step":"step-99","commit":"1"}]}' | "$S/ledger-apply.sh")"
+
+# write-artifact
+check "write-artifact: json" '.ok == true' "$(echo '{"path":"'"$T"'/a/b/brief.json","json":{"x":1}}' | "$S/write-artifact.sh")"
+check "write-artifact: content" '.x == 1' "$(cat "$T/a/b/brief.json")"
+check "write-artifact: rejects relative" '.ok == false' "$(echo '{"path":"rel.json","json":{}}' | "$S/write-artifact.sh")"
+check "write-artifact: rejects dotdot" '.ok == false' "$(echo '{"path":"'"$T"'/../x.json","json":{}}' | "$S/write-artifact.sh")"
+check "write-artifact: rejects other extensions" '.ok == false' "$(echo '{"path":"'"$T"'/x.sh","text":"rm -rf"}' | "$S/write-artifact.sh")"
+out="$(env_task '{"script":"write-artifact","path":"'"$T"'/via-host.json","json":{"y":2}}' | "$S/host-command.sh")"
+check "write-artifact via host-command" '.ok == true' "$out"
+
 # generate-tier-overrides: the Default cell may carry prose after the model code span
 cat > "$T/AGENTS.md" <<'MD'
 ## Model Tiers

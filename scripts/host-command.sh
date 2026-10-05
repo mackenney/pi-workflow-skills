@@ -7,7 +7,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ALLOWED=("step-loader" "ci-gate" "terminal-gate")
+ALLOWED=("step-loader" "ci-gate" "terminal-gate" "ledger-apply" "write-artifact")
 
 raw="$(cat)"
 # Everything after the "<Task>" marker line is the child's prompt. The runtime may append
