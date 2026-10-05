@@ -1,5 +1,8 @@
 // args: { stepFile: "/abs/plans/x/step-07-name.md", planDir: "/abs/plans/x", baseCommit?: "abc123", stageDir?: "/abs/run/NN-execute",
-//         tier?: "deep"|"standard"|"fast", worker?: "<agent name>", pr?: 123, maxFixRounds?: 2, ledgerFile?: "PROGRESS.md", notes?: "<user intent, appended to the worker task>" }
+//         tier?: "deep"|"standard"|"fast", worker?: "<agent name>", pr?: 123, maxFixRounds?: 2, ledgerFile?: "PROGRESS.md", notes?: "<user intent, appended to the worker task>",
+//         resume?: { from: "gates"|"review"|"fix"|"ci"|"ledger", commit: "<sha>", workerRunId?, guidance?, resultPath?: "<prior stageDir>/result.json" } }
+// Resume continues a stopped step from its commit instead of re-implementing it. Every non-PASS result records
+// `resumePoint: {from, commit, workerRunId, args}` in result.json and a `fix` actionable carrying the resume args.
 // Returns the stage envelope {stage, status, summary, actionables, artifacts} (skills/coordinator/SKILL.md); the full
 // result goes to <stageDir>/result.json and the envelope to <stageDir>/brief.json.
 // Ledger: once the review passes, this workflow applies the typed verdict to <planDir>/<ledgerFile> through the
@@ -8,7 +11,7 @@
 // A failed child makes runs.run reject and would end the workflow with no envelope/brief. Convert the rejection into a
 // failed result so every exit path reports (runs.all already returns per-child failures).
 const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.message) || e) }));
-const ALLOWED_ARGS = ["stepFile", "planDir", "baseCommit", "stageDir", "tier", "worker", "pr", "maxFixRounds", "ledgerFile", "notes"];
+const ALLOWED_ARGS = ["stepFile", "planDir", "baseCommit", "stageDir", "tier", "worker", "pr", "maxFixRounds", "ledgerFile", "notes", "resume"];
 const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
 if (badArgs.length) {
   // A misspelled or invented arg must not be dropped silently.
@@ -26,12 +29,14 @@ const WORKER_BY_TIER = {
   fast: { agent: "wf-flash-worker" }
 };
 
+// Empty allowed: a FAIL verdict may have no commit. PASS without one is rejected in code (fixPassless).
+const COMMIT = { type: "string", pattern: "^([0-9a-f]{7,40})?$" };
 const STEP_VERDICT = {
   type: "object", additionalProperties: false,
   required: ["verdict", "step", "gates", "coverage", "proxies_used", "deferred", "decisions_taken", "pending_decisions", "residual_risks"],
   properties: {
     verdict: { enum: ["PASS", "FAIL", "BLOCKED"] },
-    step: { type: "string" }, commit: { type: "string" },
+    step: { type: "string" }, commit: COMMIT,
     gates: {
       type: "array", items: {
         type: "object", required: ["id", "class", "result"], properties: {
@@ -51,7 +56,7 @@ const STEP_VERDICT = {
 const REVIEW_VERDICT = {
   type: "object", additionalProperties: false, required: ["verdict", "step", "gates", "findings", "ledger_gaps"],
   properties: {
-    verdict: { enum: ["PASS", "FAIL"] }, step: { type: "string" }, commit: { type: "string" },
+    verdict: { enum: ["PASS", "FAIL"] }, step: { type: "string" }, commit: COMMIT,
     gates: STEP_VERDICT.properties.gates,
     findings: { type: "array", items: { type: "object", required: ["severity", "class", "location", "evidence", "smallest_fix"] } },
     ledger_gaps: { type: "array", items: { type: "string" } }
@@ -62,6 +67,14 @@ const ledgerPath = args.planDir + "/" + (args.ledgerFile ?? "PROGRESS.md");
 const sidecar = args.stepFile.replace(/\.md$/, ".gates.json");
 const stepName = (args.stepFile.split("/").pop() || "step").replace(/\.md$/, "");
 const stageDir = args.stageDir ?? (args.planDir + "/runs/" + new Date().toISOString().replace(/[:.]/g, "-") + "-" + stepName);
+const R = args.resume;
+const RESUME_FROM = ["gates", "review", "fix", "ci", "ledger"];
+const RESUME_KEYS = ["from", "commit", "workerRunId", "guidance", "resultPath"];
+// Where a stopped step can continue without redoing finished work; null when nothing reusable exists (no commit).
+const resumeAt = (from, commit, workerRunId) => (commit ? { from, commit, workerRunId: workerRunId ?? null } : null);
+// A worker PASS the runtime's acceptance rejected is a FAIL; returning "PASS" here would reach the tail with no ledger.
+const failState = (v) => (v?.verdict === "BLOCKED" ? "BLOCKED" : "FAIL");
+const fixPassless = (v) => (v && v.verdict === "PASS" && !v.commit ? { ...v, verdict: "FAIL", residual_risks: [...(v.residual_risks ?? []), "PASS without a commit sha"] } : v);
 
 // Every exit sets `result` and leaves the block; the tail applies the ledger, persists details and returns the envelope.
 let result = null;
@@ -78,16 +91,48 @@ const tier = args.tier ?? contract.tier ?? "deep"; // deep is the trial default 
 const lane = WORKER_BY_TIER[tier];
 if (!lane) { result = { state: "BLOCKED", reason: "no worker lane for tier " + tier + " (lanes: " + Object.keys(WORKER_BY_TIER).join(", ") + "; frontier-sized steps must be split or planned as deep)" }; break main; }
 const workerAgent = args.worker ?? lane.agent;
+const baseRef = args.baseCommit ?? contract.base_commit;
 const verify = contract.gates
   .filter((g) => g.cmd && g.result !== "n/a" && g.result !== "deferred") // deferred gates are owed by a later step and ledgered, not run here
   .map((g) => ({ id: g.id, command: g.cmd, timeoutMs: g.timeoutMs ?? 900000 })); // default verify timeout is 120 s; builds need more
+
+// 1b. Resume: prove the commit is real work on this step's base before any model or ledger touches it (fail closed).
+let prior = null; let resumeCommit = null;
+if (R !== undefined) {
+  const badKeys = R && typeof R === "object" ? Object.keys(R).filter((k) => !RESUME_KEYS.includes(k)) : [];
+  if (!R || typeof R !== "object" || !RESUME_FROM.includes(R.from) || !/^[0-9a-f]{7,40}$/i.test(String(R.commit ?? "")) || badKeys.length) {
+    result = { state: "BLOCKED", stage: "resume", reason: "resume must be {from: " + RESUME_FROM.join("|") + ", commit: <7-40 hex>, workerRunId?, guidance?, resultPath?}" + (badKeys.length ? "; unknown keys: " + badKeys.join(", ") : "") }; break main;
+  }
+  if (!baseRef) { result = { state: "BLOCKED", stage: "resume", reason: "resume needs baseCommit (or the sidecar's base_commit) to prove the commit descends from the step's base" }; break main; }
+  const cc = await safe(runs.run("resume-check", { agent: "wf-host-command", label: "Check resume commit " + String(R.commit).slice(0, 7),
+    task: JSON.stringify({ script: "commit-check", commit: R.commit, base: baseRef }) }));
+  let chk = null;
+  try { chk = cc.ok ? JSON.parse(cc.output) : null; } catch (e) { chk = null; }
+  if (!chk || !chk.ok) { result = { state: "BLOCKED", stage: "resume", reason: "resume commit rejected: " + (chk?.error ?? cc.error ?? "commit-check output unparseable") }; break main; }
+  resumeCommit = chk.commit;
+  if (R.resultPath) {
+    const rd = await safe(runs.run("resume-read", { agent: "wf-host-command", label: "Read prior result", task: JSON.stringify({ script: "write-artifact", read: R.resultPath }) }));
+    let got = null;
+    try { got = rd.ok ? JSON.parse(rd.output) : null; } catch (e) { got = null; }
+    if (!got || !got.ok) { result = { state: "BLOCKED", stage: "resume", reason: "cannot read resultPath: " + (got?.error ?? rd.error ?? "unparseable") }; break main; }
+    prior = got.json;
+  }
+  if ((R.from === "ledger") && !prior?.ledger) { result = { state: "BLOCKED", stage: "resume", reason: "resume from ledger needs resultPath to a result.json holding the passed step's ledger" }; break main; }
+  // A prior ledger for another commit would tick this step with the wrong sha.
+  const priorCommit = prior?.ledger?.commit ?? prior?.verdict?.commit;
+  if ((R.from === "ledger" || R.from === "ci") && priorCommit && !String(priorCommit).toLowerCase().startsWith(String(R.commit).toLowerCase()) && !String(R.commit).toLowerCase().startsWith(String(priorCommit).toLowerCase())) {
+    result = { state: "BLOCKED", stage: "resume", reason: "resultPath ledger is for commit " + priorCommit + ", not " + R.commit }; break main;
+  }
+  if (R.from === "ci" && args.pr === undefined) { result = { state: "BLOCKED", stage: "resume", reason: "resume from ci needs pr" }; break main; }
+}
+const from = R?.from ?? null;
 
 const workerTask = [
   "Implement plan step " + contract.step + ".",
   "Step file: " + args.stepFile,
   "Gate sidecar: " + sidecar,
   "Ledger (read-only for you): " + ledgerPath + " — report ledger rows in your verdict; a script writes the file from it.",
-  "Base commit for fails-before checks: " + (args.baseCommit ?? contract.base_commit ?? "HEAD"),
+  "Base commit for fails-before checks: " + (baseRef ?? "HEAD"),
   // Without this the worker leaves changes uncommitted ("parent controls commits") and burns a fix round.
   "Commit your work (scoped to the step's files) and report the sha in STEP-VERDICT.commit. Do not edit the ledger.",
   // Observed 2026-10-05: a worker "fixed" an impossible gate by editing the sidecar. The runtime still failed it (verify is
@@ -106,80 +151,153 @@ const ACCEPTANCE = {
   verify,
   report: "on"
 };
-let impl = await safe(runs.run("implement", {
-  agent: workerAgent, label: "Implement " + contract.step, task: workerTask,
-  ...(lane.skill ? { skill: lane.skill } : {}),
-  outputSchema: STEP_VERDICT,
-  acceptance: ACCEPTANCE
-}));
-let verdict = impl.structuredOutput;
-if (impl.ok && verdict && verdict.verdict === "PASS" && !verdict.commit) verdict = { ...verdict, verdict: "FAIL", residual_risks: [...(verdict.residual_risks ?? []), "PASS without a commit sha"] };
-if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
-  { result = { state: verdict?.verdict ?? "FAIL", stage: "implement", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance }; break main; }
+// Resumes that skip the worker review a verdict rebuilt from the prior result (if given) and the sidecar; the reviewer
+// re-checks everything, so these fields are context, not authority.
+const pv = prior?.verdict ?? prior?.ledger ?? {};
+const resumedVerdict = (gates) => ({
+  verdict: "PASS", step: contract.step, commit: resumeCommit, gates,
+  coverage: pv.coverage ?? contract.coverage ?? [], proxies_used: pv.proxies_used ?? [],
+  deferred: pv.deferred ?? contract.gates.filter((g) => g.result === "deferred").map((g) => ({ gate: g.id, owed_by: g.owed_by ?? "?", reason: g.reason ?? "" })),
+  decisions_taken: pv.decisions_taken ?? [], pending_decisions: pv.pending_decisions ?? [],
+  residual_risks: [...(pv.residual_risks ?? []), "resumed from " + from + " at " + String(resumeCommit).slice(0, 12) + ": no fresh worker verdict"]
+});
+let impl = { ok: true, runId: R?.workerRunId };
+let verdict = null;
+if (!R) {
+  impl = await safe(runs.run("implement", {
+    agent: workerAgent, label: "Implement " + contract.step, task: workerTask,
+    ...(lane.skill ? { skill: lane.skill } : {}),
+    outputSchema: STEP_VERDICT,
+    acceptance: ACCEPTANCE
+  }));
+  verdict = fixPassless(impl.structuredOutput);
+  if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
+    // A commit the runtime's gates rejected while the worker claimed PASS points at the environment: re-run gates once it
+    // is fixed. A worker that itself reported FAIL/BLOCKED left real work: continue it with guidance.
+    const rp = resumeAt(impl.structuredOutput?.verdict === "PASS" && !impl.ok ? "gates" : "fix", verdict?.commit, impl.runId);
+    result = { state: failState(verdict), stage: "implement", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance, resumePoint: rp }; break main;
+  }
+} else if (from === "gates") {
+  const tmo = verify.reduce((s, g) => s + g.timeoutMs, 0) + 60000;
+  const rg = verify.length === 0 ? { ok: true, output: JSON.stringify({ ok: true, results: [] }) }
+    : await safe(runs.run("resume-gates", { agent: "wf-host-command", label: "Re-run gates for " + contract.step, timeoutMs: tmo,
+      task: JSON.stringify({ script: "run-gates", commit: resumeCommit, gates: verify }) }));
+  let gr = null;
+  try { gr = rg.ok ? JSON.parse(rg.output) : null; } catch (e) { gr = null; }
+  if (!gr || (gr.error && !Array.isArray(gr.results))) { result = { state: "BLOCKED", stage: "gates", reason: "gate re-run failed: " + (gr?.error ?? rg.error ?? "run-gates output unparseable"), resumePoint: resumeAt("gates", resumeCommit, R.workerRunId) }; break main; }
+  const byId = new Map(gr.results.map((x) => [x.id, x]));
+  const gates = contract.gates.map((g) => {
+    const x = byId.get(g.id);
+    return { id: g.id, class: g.class, ...(g.cmd ? { cmd: g.cmd } : {}), result: x ? (x.pass ? "pass" : "fail") : (g.result ?? "n/a"), ...(x && !x.pass ? { note: (x.timedOut ? "timed out; " : "exit " + x.exitCode + "; ") + x.tail.slice(-200) } : {}) };
+  });
+  verdict = resumedVerdict(gates);
+  if (!gr.ok) {
+    // The environment was meant to be fixed; gates still failing on this commit means the work itself needs changes.
+    result = { state: "FAIL", stage: "gates", verdict: { ...verdict, verdict: "FAIL" }, reason: "gates still fail: " + gates.filter((g) => g.result === "fail").map((g) => g.id).join(", "), resumePoint: resumeAt("fix", resumeCommit, R.workerRunId) }; break main;
+  }
+} else if (from === "review") {
+  verdict = resumedVerdict(pv.gates ?? []);
+} else if (from === "fix") {
+  const findings = prior?.review ? "\nLast REVIEW-VERDICT (verbatim JSON):\n" + JSON.stringify(prior.review) : "";
+  const guidance = R.guidance ? "\nUser guidance: " + R.guidance : "";
+  if (R.workerRunId) {
+    impl = await safe(runs.run("resume-fix", {
+      resume: R.workerRunId, label: "Resume fix " + contract.step,
+      task: "Resuming this step from commit " + resumeCommit + "." + guidance + findings + "\nAddress it, commit, re-run all gates, emit a new STEP-VERDICT.",
+      outputSchema: STEP_VERDICT, acceptance: ACCEPTANCE // not inherited on resume; see the fix round below
+    }));
+  }
+  // A missing or expired retained worker must not strand the step: a fresh worker picks up from the commit.
+  if (!R.workerRunId || (!impl.ok && !impl.structuredOutput)) {
+    impl = await safe(runs.run("resume-fresh", {
+      agent: workerAgent, label: "Continue " + contract.step,
+      task: workerTask + "\nResuming: commit " + resumeCommit + " already holds earlier work on this step. Continue from it (check it out if HEAD differs); do not start over." + guidance + findings,
+      ...(lane.skill ? { skill: lane.skill } : {}),
+      outputSchema: STEP_VERDICT, acceptance: ACCEPTANCE
+    }));
+  }
+  verdict = fixPassless(impl.structuredOutput);
+  if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
+    result = { state: failState(verdict), stage: "fix", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance, resumePoint: resumeAt("fix", verdict?.commit ?? resumeCommit, impl.runId) }; break main;
+  }
 }
 
 // 3. Independent review with typed verdict, then bounded fix rounds on the retained worker.
-const maxFix = args.maxFixRounds ?? 2;
-let review; let round = 0;
-while (true) {
-  review = await safe(runs.run("review-" + round, {
-    agent: "wf-step-reviewer", label: "Review " + contract.step,
-    task: [
-      "Review plan step " + contract.step + ", commit " + verdict.commit + ".",
-      "Step file: " + args.stepFile, "Gate sidecar: " + sidecar,
-      "Ledger: " + ledgerPath, "Base commit: " + (args.baseCommit ?? contract.base_commit ?? "HEAD"),
-      "Worker STEP-VERDICT JSON:", JSON.stringify(verdict)
-    ].join("\n"),
-    outputSchema: REVIEW_VERDICT
-  }));
-  const rv = review.structuredOutput;
-  if (review.ok && rv && rv.verdict === "PASS") break;
-  if (round >= maxFix || !impl.runId) {
-    { result = { state: "FAIL", stage: "review", round, review: rv, error: review.error, workerRunId: impl.runId }; break main; }
-  }
-  round += 1;
-  impl = await safe(runs.run("fix-" + round, {
-    resume: impl.runId, label: "Fix " + contract.step + " round " + round,
-    task: "Reviewer findings (verbatim JSON). Address each, re-run all gates, emit a new STEP-VERDICT:\n" + JSON.stringify(rv ?? review.error),
-    // Confirmed live (2026-09-24, toy step-01-hello): `resume` does NOT re-capture `outputSchema`
-    // from the retained contract (R-a in ORCHESTRATION-ENCODING.md \u00a76.3 resolves to "not inherited") --
-    // the fix round returned prose with no structured_output call and the workflow correctly failed-safe
-    // rather than claim a false PASS. Passing outputSchema explicitly on the resume call fixes this.
-    outputSchema: STEP_VERDICT,
-    // Same reason as outputSchema: resume resolves per-launch fields from the request first, so the host-run gates
-    // must be passed again or a fix commit could pass on the worker's own claims.
-    acceptance: ACCEPTANCE
-  }));
-  verdict = impl.structuredOutput;
-  if (impl.ok && verdict && verdict.verdict === "PASS" && !verdict.commit) verdict = { ...verdict, verdict: "FAIL", residual_risks: [...(verdict.residual_risks ?? []), "PASS without a commit sha"] };
-  if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
-    { result = { state: verdict?.verdict ?? "FAIL", stage: "fix", round, runId: impl.runId, verdict, error: impl.error }; break main; }
+let review = null; let rv = null;
+if (from !== "ci" && from !== "ledger") {
+  const maxFix = args.maxFixRounds ?? 2;
+  let round = 0;
+  while (true) {
+    const reviewItem = {
+      agent: "wf-step-reviewer", label: "Review " + contract.step,
+      task: [
+        "Review plan step " + contract.step + ", commit " + verdict.commit + ".",
+        "Step file: " + args.stepFile, "Gate sidecar: " + sidecar,
+        "Ledger: " + ledgerPath, "Base commit: " + (baseRef ?? "HEAD"),
+        "Worker STEP-VERDICT JSON:", JSON.stringify(verdict)
+      ].join("\n"),
+      outputSchema: REVIEW_VERDICT
+    };
+    review = await safe(runs.run("review-" + round, reviewItem));
+    // A reviewer crash says nothing about the work: retry once, and never spend a fix round on it.
+    if (!review.ok || !review.structuredOutput) review = await safe(runs.run("review-" + round + "-retry", reviewItem));
+    rv = review.structuredOutput;
+    if (!review.ok || !rv) {
+      result = { state: "BLOCKED", stage: "review", round, reason: "reviewer failed twice (infrastructure): " + String(review.error ?? "no REVIEW-VERDICT"), verdict, workerRunId: impl.runId, resumePoint: resumeAt("review", verdict.commit, impl.runId) }; break main;
+    }
+    if (rv.verdict === "PASS") break;
+    if (round >= maxFix || !impl.runId) {
+      result = { state: "FAIL", stage: "review", round, review: rv, verdict, error: review.error, workerRunId: impl.runId, resumePoint: resumeAt("fix", verdict.commit, impl.runId) }; break main;
+    }
+    round += 1;
+    const lastCommit = verdict.commit;
+    impl = await safe(runs.run("fix-" + round, {
+      resume: impl.runId, label: "Fix " + contract.step + " round " + round,
+      task: "Reviewer findings (verbatim JSON). Address each, re-run all gates, emit a new STEP-VERDICT:\n" + JSON.stringify(rv),
+      // Confirmed live (2026-09-24, toy step-01-hello): `resume` does NOT re-capture `outputSchema`
+      // from the retained contract (R-a in ORCHESTRATION-ENCODING.md \u00a76.3 resolves to "not inherited") --
+      // the fix round returned prose with no structured_output call and the workflow correctly failed-safe
+      // rather than claim a false PASS. Passing outputSchema explicitly on the resume call fixes this.
+      outputSchema: STEP_VERDICT,
+      // Same reason as outputSchema: resume resolves per-launch fields from the request first, so the host-run gates
+      // must be passed again or a fix commit could pass on the worker's own claims.
+      acceptance: ACCEPTANCE
+    }));
+    verdict = fixPassless(impl.structuredOutput);
+    if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
+      result = { state: failState(verdict), stage: "fix", round, runId: impl.runId, verdict, review: rv, error: impl.error, resumePoint: resumeAt("fix", verdict?.commit ?? lastCommit, impl.runId) }; break main;
+    }
   }
 }
 
-// 4. Optional CI gate from structured gh output (never tail/truncated text).
-let ci = null;
-if (args.pr !== undefined) {
+// 4. Optional CI gate from structured gh output (never tail/truncated text). Resuming from ledger keeps the prior CI read.
+const commit = verdict?.commit ?? resumeCommit;
+let ci = from === "ledger" ? (prior.ledger.ci ?? null) : null;
+if (args.pr !== undefined && from !== "ledger") {
   // expectSha binds the checks to this step's commit (a green PR head for an older commit is "stale", not green).
   // timeoutMs stays above the 30-minute CI wait so a slow CI cannot kill the runner.
   const ciRun = await safe(runs.run("ci", { agent: "wf-host-command", label: "Read CI for PR " + args.pr, timeoutMs: 2100000,
-    task: JSON.stringify({ script: "ci-gate", pr: args.pr, waitSeconds: 1800, expectSha: verdict.commit }) }));
+    task: JSON.stringify({ script: "ci-gate", pr: args.pr, waitSeconds: 1800, expectSha: commit }) }));
   try { ci = ciRun.ok ? JSON.parse(ciRun.output) : { state: "unknown", error: ciRun.error }; } catch (e) { ci = { state: "unknown", error: "ci-gate output unparseable" }; }
 }
 
 // 5. Ledger delta, applied below by ledger-apply. Every `deferred`/proxy entry becomes an `open` row that blocks the
 //    terminal gate until a human writes `discharged <commit>` or `waived by <name> <date>: <reason>`.
-const ledger = {
-  step: contract.step, commit: verdict.commit, ledgerPath, gates: verdict.gates,
+//    ci/ledger resumes reuse the prior ledger; without one (ci only) the step's rows were already applied when its review
+//    passed, so a bare {step, commit} only ticks it.
+const pl = (from === "ci" || from === "ledger") ? (prior?.ledger ?? { step: contract.step, gates: [] }) : null;
+const ledger = pl ? { ...pl, step: contract.step, commit, ledgerPath, ci } : {
+  step: contract.step, commit, ledgerPath, gates: verdict.gates.length ? verdict.gates : (rv?.gates ?? []),
   deferred: verdict.deferred, proxies_used: verdict.proxies_used,
   decisions_taken: verdict.decisions_taken, pending_decisions: verdict.pending_decisions,
-  residual_risks: verdict.residual_risks, review: review.structuredOutput, ci
+  residual_risks: verdict.residual_risks, review: rv, ci
 };
 // Optional, best-effort mirror only (mission state is subject to retention cleanup and is never read as authority).
 if (typeof state !== "undefined") { try { await state.set("ledger." + contract.step, ledger); } catch (_) { /* mirror failure is not a step failure */ } }
 // Only green CI (or no PR) is PASS. red -> FAIL; pending/none/stale/unknown -> BLOCKED for the parent to resolve.
 const finalState = !ci || ci.state === "green" ? "PASS" : ci.state === "red" ? "FAIL" : "BLOCKED";
-result = { state: finalState, ...(finalState === "PASS" ? {} : { stage: "ci" }), ledger, workerRunId: impl.runId, reviewRunId: review.runId };
+const workerRunId = impl.runId ?? prior?.workerRunId;
+result = { state: finalState, ...(finalState === "PASS" ? {} : { stage: "ci", resumePoint: resumeAt("ci", commit, workerRunId) }), ledger, workerRunId, reviewRunId: review?.runId ?? prior?.reviewRunId, ...(from ? { resumedFrom: from } : {}) };
 }
 
 // Tail: ledger, persisted details, envelope.
@@ -190,21 +308,34 @@ if (result.ledger) {
   const la = await safe(runs.run("ledger", { agent: "wf-host-command", label: "Apply ledger " + result.ledger.step,
     task: JSON.stringify({ script: "ledger-apply", planDir: args.planDir, ledgerFile: args.ledgerFile, ledgers: [{ ...result.ledger, tick: result.state === "PASS" }] }) }));
   try { ledgerApply = la.ok ? JSON.parse(la.output) : { ok: false, errors: [la.error] }; } catch (e) { ledgerApply = { ok: false, errors: ["ledger-apply output unparseable"] }; }
-  if (!ledgerApply.ok && result.state === "PASS") result = { ...result, state: "BLOCKED", stage: "ledger" };
+  if (!ledgerApply.ok && result.state === "PASS") result = { ...result, state: "BLOCKED", stage: "ledger", resumePoint: resumeAt("ledger", result.ledger.commit, result.workerRunId) };
+}
+// The exact args that continue this step; resultPath lets the resumed run reuse this run's verdict/ledger, and a fresh
+// stageDir keeps this run's result.json intact.
+const rp = result.state !== "PASS" ? result.resumePoint ?? null : null;
+if (rp) {
+  const { resume: _old, ...rest } = args;
+  rp.args = { ...rest, stageDir: stageDir + "-resume-" + rp.from, resume: { from: rp.from, commit: rp.commit, ...(rp.workerRunId ? { workerRunId: rp.workerRunId } : {}), resultPath: stageDir + "/result.json" } };
+  result = { ...result, resumePoint: rp };
 }
 const L = result.ledger;
 const actionables = [];
+// Failure and resume first: the envelope caps actionables at 12 and these are the ones the parent must act on.
+if (result.state !== "PASS") actionables.push({ what: (result.stage ?? "step") + ": " + (result.reason ?? result.error ?? (result.review?.findings?.[0]?.evidence) ?? (verdictOut?.residual_risks?.[0]) ?? (L?.ci ? "CI " + L.ci.state : "see result.json")), kind: "fix", ref: stageDir + "/result.json" });
+if (rp) {
+  const full = "resume from " + rp.from + " at " + rp.commit + (rp.from === "fix" ? " (add resume.guidance)" : "") + ": args.resume=" + JSON.stringify(rp.args.resume);
+  actionables.push({ what: full.length <= 300 ? full : "resume from " + rp.from + " at " + rp.commit + ": pass result.json resumePoint.args", kind: "fix", ref: stageDir + "/result.json#resumePoint" });
+}
 for (const p of L?.pending_decisions ?? []) actionables.push({ what: p, kind: "decision", ref: ledgerPath + "#pending-decisions-human" });
 for (const d of L?.deferred ?? []) actionables.push({ what: "deferred " + d.gate + " (owed by " + d.owed_by + ")", kind: "info", ref: ledgerPath + "#tech-debt--deferred-gates" });
 for (const e of ledgerApply?.errors ?? []) actionables.push({ what: "ledger-apply: " + e, kind: "fix", ref: ledgerPath });
-if (result.state !== "PASS") actionables.push({ what: (result.stage ?? "step") + ": " + (result.reason ?? result.error ?? (result.review?.findings?.[0]?.evidence) ?? (verdictOut?.residual_risks?.[0]) ?? (L?.ci ? "CI " + L.ci.state : "see result.json")), kind: "fix", ref: stageDir + "/result.json" });
 for (const rk of (L?.residual_risks ?? []).slice(0, 3)) actionables.push({ what: rk, kind: "info", ref: stageDir + "/result.json" });
 const status = result.state === "PASS" ? (actionables.some((a) => a.kind === "decision") ? "needs-decision" : "done") : result.state === "BLOCKED" ? "blocked" : "failed";
 const stepId = L?.step ?? stepName;
 const summary = result.state === "PASS"
-  ? stepId + " PASS @" + String(L.commit).slice(0, 7) + "; " + (L.gates ?? []).filter((g) => g.result === "pass").length + " gates passed; ledger " + (ledgerApply?.ok ? "applied" : "NOT applied") + "."
+  ? stepId + " PASS @" + String(L.commit).slice(0, 7) + "; " + (L.gates ?? []).filter((g) => g.result === "pass").length + " gates passed; ledger " + (ledgerApply?.ok ? "applied" : "NOT applied") + (result.resumedFrom ? " (resumed from " + result.resumedFrom + ")" : "") + "."
   : stepId + " " + result.state + (result.stage ? " at " + result.stage : "") + ": " + String(result.reason ?? result.error ?? "see result.json").split("\n").filter((l) => l && !/^Run fan-out/.test(l)).slice(0, 2).join(" ").slice(0, 200) + ".";
-const envelope = { stage: "execute-step", status, summary, actionables, artifacts: { primary: result.state === "PASS" ? ledgerPath : stageDir + "/result.json", details: [stageDir + "/result.json"] } };
+const envelope = { stage: "execute-step", status, summary, actionables: actionables.slice(0, 12), artifacts: { primary: result.state === "PASS" ? ledgerPath : stageDir + "/result.json", details: [stageDir + "/result.json"] } };
 await safe(runs.run("persist", { agent: "wf-host-command", label: "Persist " + stepId,
   task: JSON.stringify({ script: "write-artifact", files: [{ path: stageDir + "/result.json", json: { ...result, ledgerApply } }, { path: stageDir + "/brief.json", json: envelope }] }) }));
 return envelope;

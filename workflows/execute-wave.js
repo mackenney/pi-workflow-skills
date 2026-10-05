@@ -27,12 +27,14 @@ const WORKER_BY_TIER = {
 };
 
 // Keep in sync with execute-step.js (the sandbox cannot import shared modules).
+// Empty allowed: a FAIL verdict may have no commit. PASS without one is rejected in code (the board).
+const COMMIT = { type: "string", pattern: "^([0-9a-f]{7,40})?$" };
 const STEP_VERDICT = {
   type: "object", additionalProperties: false,
   required: ["verdict", "step", "gates", "coverage", "proxies_used", "deferred", "decisions_taken", "pending_decisions", "residual_risks"],
   properties: {
     verdict: { enum: ["PASS", "FAIL", "BLOCKED"] },
-    step: { type: "string" }, commit: { type: "string" },
+    step: { type: "string" }, commit: COMMIT,
     gates: {
       type: "array", items: {
         type: "object", required: ["id", "class", "result"], properties: {
@@ -52,7 +54,7 @@ const STEP_VERDICT = {
 const REVIEW_VERDICT = {
   type: "object", additionalProperties: false, required: ["verdict", "step", "gates", "findings", "ledger_gaps"],
   properties: {
-    verdict: { enum: ["PASS", "FAIL"] }, step: { type: "string" }, commit: { type: "string" },
+    verdict: { enum: ["PASS", "FAIL"] }, step: { type: "string" }, commit: COMMIT,
     gates: STEP_VERDICT.properties.gates,
     findings: { type: "array", items: { type: "object", required: ["severity", "class", "location", "evidence", "smallest_fix"] } },
     ledger_gaps: { type: "array", items: { type: "string" } }
@@ -113,7 +115,7 @@ const workers = await runs.all(contracts.map((c, i) => {
 // 3. Independent typed review of each PASSing lane. The reviewer runs in the main checkout, so it re-runs gates in a
 //    throwaway detached worktree of the lane commit (lane branches share the object store).
 const passing = workers.map((w, i) => ({ w, i })).filter(({ w }) => w.ok && w.structuredOutput && w.structuredOutput.verdict === "PASS" && w.structuredOutput.commit);
-const reviews = passing.length === 0 ? [] : await runs.all(passing.map(({ w, i }) => ({
+const reviewItems = passing.map(({ w, i }) => ({
   key: "review-" + keyOf(args.stepFiles[i]), agent: "wf-step-reviewer", label: "Review " + contracts[i].step,
   task: [
     "Review plan step " + contracts[i].step + ", commit " + w.structuredOutput.commit + " (on a lane branch, not checked out here).",
@@ -122,17 +124,28 @@ const reviews = passing.length === 0 ? [] : await runs.all(passing.map(({ w, i }
     "Worker STEP-VERDICT JSON:", JSON.stringify(w.structuredOutput)
   ].join("\n"),
   outputSchema: REVIEW_VERDICT
-})));
+}));
+const reviews = reviewItems.length === 0 ? [] : await runs.all(reviewItems);
+// A reviewer crash says nothing about the lane's work: retry those reviews once; a lane whose review still crashes is
+// BLOCKED (re-review it), not FAIL (which would send it back to a worker).
+const crashed = (r) => !r || !r.ok || !r.structuredOutput;
+const retryIdx = reviews.map((r, j) => (crashed(r) ? j : -1)).filter((j) => j >= 0);
+if (retryIdx.length) {
+  const again = await runs.all(retryIdx.map((j) => ({ ...reviewItems[j], key: reviewItems[j].key + "-retry" })));
+  retryIdx.forEach((j, k) => { reviews[j] = again[k]; });
+}
 
 // 4. Board: one ledger object per lane. Parent merges PASS lanes, re-gates the merged tree, then applies ledgers.
 const board = contracts.map((c, i) => {
   const w = workers[i]; const v = w.structuredOutput;
   const pIdx = passing.findIndex((p) => p.i === i);
   const r = pIdx >= 0 ? reviews[pIdx] : null; const rv = r ? r.structuredOutput : null;
-  const state = !w.ok || !v ? "FAIL" : v.verdict !== "PASS" ? v.verdict : (r && r.ok && rv && rv.verdict === "PASS" ? "PASS" : "FAIL");
+  const noCommit = v && v.verdict === "PASS" && !v.commit;
+  const state = !w.ok || !v || noCommit ? "FAIL" : v.verdict !== "PASS" ? v.verdict : pIdx >= 0 && crashed(r) ? "BLOCKED" : (rv?.verdict === "PASS" ? "PASS" : "FAIL");
   return {
     step: c.step, stepFile: args.stepFiles[i], state, stage: state === "PASS" ? null : (pIdx >= 0 ? "review" : "implement"),
-    commit: v?.commit ?? null, workerRunId: w.runId, asyncDir: w.asyncDir, error: w.error ?? r?.error ?? null,
+    commit: v?.commit ?? null, workerRunId: w.runId, asyncDir: w.asyncDir,
+    error: w.error ?? (noCommit ? "PASS without a commit sha" : null) ?? (pIdx >= 0 && crashed(r) ? "reviewer failed twice (infrastructure): " + (r?.error ?? "no REVIEW-VERDICT") : r?.error) ?? null,
     ledger: v ? { step: c.step, commit: v.commit, ledgerPath, gates: v.gates, deferred: v.deferred, proxies_used: v.proxies_used,
                   decisions_taken: v.decisions_taken, pending_decisions: v.pending_decisions, residual_risks: v.residual_risks, review: rv } : null
   };
@@ -145,7 +158,7 @@ result = { state: board.every((l) => l.state === "PASS") ? "PASS" : "PARTIAL", b
 const lanes = result.board ?? [];
 const actionables = [];
 for (const l of lanes.filter((x) => x.state === "PASS")) actionables.push({ what: "merge " + l.step + " @" + String(l.commit).slice(0, 7) + " (branch in handoff.json)", kind: "info", ref: l.asyncDir + "/handoff.json" });
-for (const l of lanes.filter((x) => x.state !== "PASS")) actionables.push({ what: l.step + " " + l.state + " at " + l.stage + ": re-run through execute-step.js", kind: "fix", ref: stageDir + "/result.json" });
+for (const l of lanes.filter((x) => x.state !== "PASS")) actionables.push({ what: l.step + " " + l.state + " at " + l.stage + ": " + (l.state === "BLOCKED" && l.stage === "review" ? "reviewer crashed; merge the lane branch, then execute-step.js resume {from: \"review\", commit: \"" + l.commit + "\", workerRunId: \"" + l.workerRunId + "\"}" : "re-run through execute-step.js"), kind: "fix", ref: stageDir + "/result.json" });
 for (const l of lanes) for (const p of l.ledger?.pending_decisions ?? []) actionables.push({ what: l.step + ": " + p, kind: "decision", ref: stageDir + "/result.json" });
 if (!lanes.length) actionables.push({ what: result.reason ?? result.error ?? "wave blocked", kind: "fix", ref: stageDir + "/result.json" });
 const passN = lanes.filter((x) => x.state === "PASS").length;

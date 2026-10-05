@@ -94,9 +94,13 @@ Committed lanes are retained on branches `pi-subagents/<key>-…`; the exact bra
 
 Read the envelope's `fix` actionable first; open `<stageDir>/result.json` only for the detail it points at.
 
-- `blocked` (sidecar unusable, no lane for the tier, ledger-apply failed, CI pending/none/stale) → fix the artifact or wait for CI (push the step commit if CI is `stale`), then re-run.
-- `failed` at implement → the runtime or the worker's own verdict failed a gate. Environmental issue → fix and re-run; wrong gate/step → amend step file + sidecar (re-run `validate-plan.sh`), re-run.
-- `failed` at review/fix → fix rounds are exhausted. **Stop and escalate** with the step file, the final REVIEW-VERDICT (from `result.json`), and your diagnosis.
+- `blocked` (sidecar unusable, no lane for the tier, ledger-apply failed, CI pending/none/stale, reviewer crashed twice) → fix the artifact or wait for CI (push the step commit if CI is `stale`), then resume (below) or re-run.
+- `failed` at implement → the runtime or the worker's own verdict failed a gate. Environmental issue → fix it and resume from `gates`; real work left → resume from `fix`; wrong gate/step → amend step file + sidecar (re-run `validate-plan.sh`), re-run from scratch.
+- `failed` at review/fix → fix rounds are exhausted. **Stop and escalate** with the step file, the final REVIEW-VERDICT (from `result.json`), and your diagnosis; resume from `fix` with the human's guidance.
+
+### Resuming a step
+
+Once a step has a commit, never re-run it from scratch to get past a later stop. Every non-PASS `execute-step.js` envelope with a commit carries a `fix` actionable `resume from <from> at <sha>: args.resume=…`, and `result.json` holds `resumePoint.args`: the exact args for the next run (fresh `stageDir`, `resume.resultPath` = this run's `result.json`). Re-launch `execute-step.js` with them unchanged, except: add `resume.guidance` (the human's words, quoted) for `fix`; check out the commit before `gates` (gates run in the checkout). The workflow blocks if the commit is missing or does not descend from the step base, so a step without `base_commit` needs `baseCommit`. Points the workflow picks: `gates` (worker claimed PASS, runtime gates rejected it — environment), `fix` (worker FAIL, review FAIL after the last round, gates still failing on resume), `review` (reviewer crashed twice; no fix round spent), `ci` (CI not green), `ledger` (PASS but ledger-apply failed). An `execute-wave.js` lane `BLOCKED` at review gets the same treatment after you merge it: `resume {from: "review", commit, workerRunId}`.
 - Workflow/launch/extension failure → infrastructure blocker. Report the exact error, run id and repo state; do not switch execution mode.
 
 Escalate immediately when: a wave has 3+ failing steps with no common fix; a change breaks tests the step never mentioned; the codebase diverges from plan assumptions; an irreversible action (migration, external API) looks wrong.
