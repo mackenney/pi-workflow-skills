@@ -97,6 +97,9 @@ act on mechanically; report which gates ran.
 WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"
 ```
 
+Shell variables do not persist between Bash calls: start every command that uses `$WFS` with this
+assignment. In child prompts, `<WFS>` stands for its resolved value.
+
 Inputs: `spec` (spec or investigation path), `planDir` (`plans/<plan-name>/`), optional `stageDir`
 (default `<planDir>/runs/<YYYY-MM-DDTHHMMSS>-plan/`), `tier` (executor tier the steps are sized
 for; default `deep`; `fast` has no Claude Code worker, prefer `standard` or `deep`), `mode`,
@@ -119,7 +122,8 @@ Executor tier: <tier>
 Angle <n> of <N> - propose an independent structural decomposition.
 Write your plan-summary and step files under <planDir>/angle-<n>/ (plan-summary at <planDir>/angle-<n>/plan-summary.md).
 ```
-A planner whose `plan-summary.md` is missing or empty failed. All failed → `FAIL` at `angles`, go to
+Wait for a completion notification from every planner before checking files (a check before that
+is not a failure). A planner whose `plan-summary.md` is missing or empty failed. All failed → `FAIL` at `angles`, go to
 step 6. Some failed → continue with the rest and record an `info` actionable per failed angle.
 
 **2. Synthesis loop (gate)** — up to `maxSynthRounds` rounds, each a **fresh** `wf-synthesizer`
@@ -134,7 +138,7 @@ Executor tier: <tier>
 Write the unified plan (step files + *.gates.json sidecars) under <planDir>/, a single machine-readable index at <planDir>/plan.json (schema: {steps:[{id,tier,files,gates,coverage,hard_splits_declared}]}), and PROGRESS.md (step-contract ledger sections + ## Steps checklist).
 Validator: bash "<WFS>/scripts/validate-plan.sh" "<planDir>/plan.json" must print {"ok":true,...}. Run it before finishing.
 ```
-After the child returns, run `bash "$WFS/scripts/validate-plan.sh" "<planDir>/plan.json"` yourself.
+After the child returns, run `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/validate-plan.sh" "<planDir>/plan.json"` yourself.
 `ok: true` → step 3. Otherwise next round, prompt:
 ```
 Mode: plan. Fix round <r>.
@@ -145,14 +149,15 @@ validate-plan.sh errors to fix: <errors JSON array, verbatim>
 Rewrite <planDir>/plan.json (and the affected step files/sidecars) to resolve every listed error.
 ```
 After `maxSynthRounds` rounds without `ok` → `FAIL` at `synth` with the last errors. A child that
-ends with `NEEDS-DECISION:` → ask the user, `SendMessage` the answer, and treat its next reply as the
+ends with `NEEDS-DECISION:` → ask the user, `SendMessage` the answer (load it with ToolSearch
+`select:SendMessage` first if it is deferred), and treat its next reply as the
 same round.
 
 **3. Fact-check (gate).** Dispatch `wf-fact-checker`:
 ```
 Fact-check the plan at <planDir>/plan.json against the repo: verify every gate command exists and is runnable, and every cited fact is real. Write a JSON report to <planDir>/factcheck-0.json: {claims:[{claim, verdict: CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE, evidence}]}.
 ```
-Run `bash "$WFS/scripts/classify-factcheck.sh" <planDir>/factcheck-0.json`. Fail closed: `error`
+Run `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/classify-factcheck.sh" <planDir>/factcheck-0.json`. Fail closed: `error`
 set or `total` 0 → `FAIL` at `factcheck`, step 6.
 
 **4. Fix pass (gate)** — only if `fixScope != none` and `refuted + partial > 0`. Dispatch `wf-worker`:
@@ -184,9 +189,9 @@ not PASS, else `needs-decision` if `pendingDecisions`, else `done`; summary `pla
 ok; fact-check <total> claims, <r> refuted, <p> partial, <d> disputed.` or `plan FAIL at <stage>.`;
 actionables: each pending decision (`decision`), on PASS "check PROGRESS.md Open Decisions before
 executing" (`info`), on FAIL the failing stage and its first errors (`fix`), each failed angle
-(`info`); `artifacts.primary` = plan.json. Check it with `"$WFS/claude/scripts/check-block.sh" envelope`.
+(`info`); `artifacts.primary` = plan.json. Check it with `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; "$WFS/claude/scripts/check-block.sh" envelope <stageDir>/brief.json`.
 Record disputed claims and other `decision` actionables in the ledger:
-`echo '{"planDir":"<planDir>","ledgers":[{"step":"plan","tick":false,"pending_decisions":[...]}]}' | "$WFS/scripts/ledger-apply.sh"`.
+`WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; echo '{"planDir":"<planDir>","ledgers":[{"step":"plan","tick":false,"pending_decisions":[...]}]}' | "$WFS/scripts/ledger-apply.sh"`.
 
 **7. Human-facing checks** (after a PASS, before reporting):
 - 7a. Layout: every plan file under `plans/<plan-name>/`; move strays and fix PROGRESS.md links.

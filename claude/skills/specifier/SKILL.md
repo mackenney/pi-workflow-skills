@@ -255,7 +255,7 @@ When the main session itself writes the spec (no stage directory), follow Steps 
 The coordinator runs the spec as a single-agent stage. Single depth: only the main session dispatches.
 
 1. Main session calls `Agent` with `subagent_type: "wf-synthesizer"`. The task states `mode: "spec"`, the investigation/intent paths, the spec target path from Step 7 (or the repo convention), and the detail-file path (default `<stageDir>/spec.md`, or an absolute path). Pass paths, not content.
-2. The child follows Steps 1-8, writes the spec and the Step 8 report to the detail file, and ends its reply with a line `ENVELOPE:` followed by one fenced ```json block, the last content of the reply:
+2. The child follows Steps 1-8, writes the spec to the spec target path and the Step 8 report to the detail file (never the spec path), and ends its reply with a line `ENVELOPE:` followed by one fenced ```json block, the last content of the reply:
 
 ```json
 {"stage": "spec", "status": "done", "summary": "<=400 chars", "actionables": [{"what": "<=300 chars", "kind": "decision", "ref": "SPEC.md § Open Questions"}], "artifacts": {"primary": "<spec path>", "details": ["<detail file>"]}}
@@ -265,4 +265,4 @@ The coordinator runs the spec as a single-agent stage. Single depth: only the ma
    - `actionables`: at most 12; `kind` is `decision`, `fix` or `info`.
 3. The main session copies the block verbatim to `<stageDir>/brief.json` with Write, then checks it with `bash "$WFS/claude/scripts/check-block.sh" envelope <stageDir>/brief.json` (with `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"`; it prints `{ok, errors}` and rejects unknown keys, a bad status, a summary over 400 chars or more than 12 actionables) and checks the detail file exists (`test -s`).
 4. On a missing/invalid block, failed check or missing detail file, retry once with the same agent (`wf-synthesizer`; a weaker agent would silently downgrade the stage). If the retry also fails, the main session writes a `blocked` envelope to `<stageDir>/brief.json` itself, with the reason in `summary` and a `fix` actionable.
-5. If a decision blocks synthesis, the child instead ends with `NEEDS-DECISION:` and a fenced block (decision, options, recommendation). The main session asks the user, then resumes the child with `SendMessage` or re-dispatches with the answer.
+5. If a decision blocks synthesis, the child instead ends with `NEEDS-DECISION:` and a fenced block (decision, options, recommendation). The main session asks the user, then resumes the child with `SendMessage` (load it with ToolSearch `select:SendMessage` first if it is deferred) or re-dispatches with the answer.

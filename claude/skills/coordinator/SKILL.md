@@ -19,6 +19,9 @@ resulting envelope in mind afterwards.
 WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"   # this repo: scripts/, claude/scripts/
 ```
 
+Shell variables do not persist between Bash calls: start every command that uses `$WFS` with this
+assignment.
+
 ## Activation
 
 The user writes "coordinator" or `/coordinator`, usually with a chain diagram in prose. The prose is
@@ -48,6 +51,11 @@ always runs through its procedure and produces a brief, however small the input;
 stage's work yourself. Outside named stages you never implement, plan or review; direct edits only
 for a trivial single-file change in 1–2 tool calls (typo, stale path, comment). If unsure, delegate.
 
+**Single depth.** Dispatch only `wf-*` agents. Never fork (`subagent_type: "fork"`) and never use
+`general-purpose` during a procedure: both carry the `Agent` tool and could dispatch agents of their
+own. After a parallel dispatch, wait for a completion notification from every agent before any file
+or gate check; a check before that is not a failure.
+
 **Pass paths, never content.** A stage's inputs are earlier stages' `artifacts` paths plus allowed
 overrides. Never paste a report, plan or diff into a prompt.
 
@@ -71,7 +79,7 @@ Every stage ends with exactly this object in `<stageDir>/brief.json`:
 
 At most 12 actionables; no other keys. `decision` = needs the user; `fix` = mechanical next work;
 `info` = worth knowing. Check every brief with `"$WFS/claude/scripts/check-block.sh" envelope
-<stageDir>/brief.json`; not ok → fix the brief from the stage's facts, never ship an invalid one.
+<stageDir>/brief.json` (with the `WFS=` assignment in the same command); not ok → fix the brief from the stage's facts, never ship an invalid one.
 
 ### Single-agent stage procedure (was `workflows/stage.js`)
 
@@ -97,9 +105,9 @@ For `fix`, `custom`, and the stages whose skill points here:
 | Stage | User may write | Procedure (skill → section) | Required inputs → args | Overrides |
 |---|---|---|---|---|
 | **investigate** | investigator, investigate X, find out why | `investigator` → Stage mode (1–5 `wf-scout` helpers writing `scout-N.md`, then a `wf-worker` merge writing `findings.md`) | topic text, scope paths; args `{stage: "investigate", agent: "wf-worker", skill: "investigator", detailFile: "findings.md", helpers: [...]}` | scout count/angles (`helpers`), `model`, `notes` |
-| **spec** | specifier, spec, write a spec | `specifier` → Stage mode (`wf-synthesizer`, `mode: "spec"`) | findings path (or description) → spec path (repo convention, else `<planDir>/SPEC.md`); args `{stage: "spec", agent: "wf-synthesizer", skill: "specifier", detailFile: <spec path>}` | `model`, `notes` |
+| **spec** | specifier, spec, write a spec | `specifier` → Stage mode (`wf-synthesizer`, `mode: "spec"`) | findings path (or description) → spec path (repo convention, else `<planDir>/SPEC.md`); args `{stage: "spec", agent: "wf-synthesizer", skill: "specifier", detailFile: "spec.md"}` (the Step 8 report; the spec itself goes to the spec path, which is `artifacts.primary`) | `model`, `notes` |
 | **fact-check-doc** | fact-checker (after anything that is not plan/review) | `fact-checker` → Stage mode (`wf-fact-checker` → `factcheck.json`, classified by `classify-factcheck.sh`) | document path; args `{stage: "fact-check-doc", agent: "wf-fact-checker", detailFile: "factcheck.json"}` | `model`, `notes` |
-| **fix** | fix (after fact-check-doc) | Single-agent stage procedure, `wf-worker`, task: fix REFUTED/PARTIAL items in the checked document only; skip DISPUTED/UNVERIFIABLE unless confirmed | document + fact-check paths; args `{stage: "fix", agent: "wf-worker", detailFile: "fix-notes.md"}` | `model`, `notes` (scope words like "only typos" go in the task and in `notes`) |
+| **fix** | fix (after fact-check-doc) | Single-agent stage procedure, `wf-worker`, task: fix REFUTED/PARTIAL items in the checked document only; skip DISPUTED/UNVERIFIABLE unless confirmed; "Do not emit a FIX-REPORT block; end with ENVELOPE: only." | document + fact-check paths; args `{stage: "fix", agent: "wf-worker", detailFile: "fix-notes.md"}` | `model`, `notes` (scope words like "only typos" go in the task and in `notes`) |
 | **plan** | planner, plan it, `planner -> fact-checker -> fix` | `planner` → "plan, fact-check, fix" (fact-check and fix built in) | `spec`, `planDir` | `angles` (2–4, default 3), `mode: "simple"`, `tier` (executor tier the steps are sized for), `plannerModel`, `synthModel`, `factcheckModel`, `fixModel`, `fixScope`, `notes` |
 | **execute** | executor, implement, run the plan | `executor` → Procedure A (one step) or B (wave) per wave, then **done-check** | `planDir`, `stepFile(s)` | `tier`, `pr`, `notes`, `resume` (Procedure A only: copy `resumePoint.args` from the stopped step's `result.json`; add `guidance` for `fix`) |
 | **review** | code-reviewer, `(code-reviewer -> fact-checker -> fix) xN` | `code-reviewer` → "review rounds" (fact-check and fix built in; stops at the first clean round) | `repo`, `baseRef` (start of the change), `target` (one line), `reviewDir` = `<stageDir>` | `maxRounds` = N (default 2), `crossExam` (default true; false for "no x-check"), `diversityModel` ("with sonnet"; see Models), `reviewerModel`, `factcheckModel`, `fixModel`, `fixScope`, `notes` |
@@ -159,7 +167,7 @@ Rules:
    the args it requires (review: `target`, `reviewDir`; plan: `spec`, `planDir`; execute: `planDir`;
    done-check: `planDir`; single-agent stages: `stage`, `agent`).
 3. **Write `chain.json`** (`{prose, stages: [{n, stage, args, pause}], mapping, questions, status:
-   "ready"|"ask", dir}`) and run `bash "$WFS/scripts/validate-chain.sh" <dir>/chain.json`. It fails on
+   "ready"|"ask", dir}`) and run `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/validate-chain.sh" <dir>/chain.json`. It fails on
    any meaningful word no `from` covers, unknown stages or args (arg names are shared with the pi
    workflows it reads), a structured `to` missing from its stage, or ambiguous readings without
    questions. Fix the mapping and re-run until `ok`. It checks bookkeeping, not judgement.
@@ -220,7 +228,7 @@ done-check result.
   to continue on defaults; the planner procedure records disputed claims through `ledger-apply`.
 - **review**: a `failed` review with findings left after N rounds is reported, not looped further.
 - A child that ends with `NEEDS-DECISION:` → ask the user (quote the block), then `SendMessage` the
-  answer to that agent and continue the procedure with its next reply.
+  answer to that agent (load it first with ToolSearch `select:SendMessage` if it is deferred) and continue the procedure with its next reply.
 - Any infrastructure failure (agent launch error, unknown agent, tool error) is a `blocked` stage:
   report the exact error; never switch to doing the stage yourself.
 

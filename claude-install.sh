@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Physical path: a checkout reached through a symlink must record the same targets as the real path.
+REPO_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 CC_SKILLS_DIR="$REPO_DIR/claude/skills"
 CC_AGENTS_DIR="$REPO_DIR/claude/agents"
 # Older versions of this script linked the pi originals; those links are ours to migrate, never to keep.
@@ -48,12 +49,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# points_to <link> <source>: the link resolves to <source>. Compares resolved paths so links written by an older
+# version through a symlinked checkout (logical path) still count as ours.
+points_to() {
+  [[ -L "$1" ]] || return 1
+  local cur; cur="$(readlink -f "$1")" || return 1
+  [[ -n "$cur" && "$cur" == "$(readlink -f "$2")" ]]
+}
+
 # install_link <source> <link> [legacy-source]
 install_link() {
   local src="$1" link="$2" legacy="${3:-}"
-  if [[ -L "$link" && "$(readlink "$link")" == "$src" ]]; then
+  if points_to "$link" "$src"; then
     echo "exists    $link"
-  elif [[ -n "$legacy" && -L "$link" && "$(readlink "$link")" == "$legacy" ]]; then
+  elif [[ -n "$legacy" ]] && points_to "$link" "$legacy"; then
     ln -sfn "$src" "$link"
     echo "migrated  $link -> $src  (was the pi original)"
   elif [[ -e "$link" || -L "$link" ]]; then
@@ -68,9 +77,8 @@ install_link() {
 uninstall_link() {
   local link="$1"; shift
   if [[ -L "$link" ]]; then
-    local cur; cur="$(readlink "$link")"
     for src in "$@"; do
-      if [[ "$cur" == "$src" ]]; then
+      if points_to "$link" "$src"; then
         rm "$link"
         echo "removed   $link"
         return

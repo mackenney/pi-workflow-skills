@@ -85,8 +85,8 @@ Read all scout output files. Do not expect scout findings in their replies — s
 When the `coordinator` skill (or the user) calls this skill for the investigate stage, it names a `<stageDir>` and a task. Procedure:
 
 1. Orient (Step 1), then split the task into N angles (N ≤ 5).
-2. Dispatch N `wf-scout` in parallel (one message). Each writes `<stageDir>/scout-N.md`. Check each file exists and is non-empty; re-dispatch a missing one once; drop it as a gap if it fails again.
-3. Dispatch one `wf-worker` (single `Agent` call) to merge. Its prompt contains: the task, the absolute paths of the surviving `scout-N.md` files, the instruction to write the consolidated report (contradictions flagged, gaps explicit, Synthesis Output Format matching the task) to `<stageDir>/findings.md`, and the instruction to end its reply with an `ENVELOPE:` line followed by one fenced ```json block:
+2. Dispatch N `wf-scout` in parallel (one message). Each writes `<stageDir>/scout-N.md`. Wait for a completion notification from every scout, then check each file exists and is non-empty; re-dispatch a missing one once; drop it as a gap if it fails again.
+3. Dispatch one `wf-worker` (single `Agent` call) to merge. Its prompt contains: the task, "Read <absolute path of this skill file, `${CLAUDE_SKILL_DIR}/SKILL.md` resolved by the main session>, section Synthesis Output Formats, first" (`wf-worker` does not preload this skill), the absolute paths of the surviving `scout-N.md` files, the instruction to write the consolidated report (contradictions flagged, gaps explicit, Synthesis Output Format matching the task) to `<stageDir>/findings.md`, and the instruction to end its reply with an `ENVELOPE:` line followed by one fenced ```json block:
    ```json
    {"stage": "investigate", "status": "done|needs-decision|failed|blocked",
     "summary": "<=400 chars", "actionables": [{"what": "<=300 chars", "kind": "decision|fix|info", "ref": "findings.md#anchor"}],

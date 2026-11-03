@@ -16,8 +16,8 @@ prose steering replaces enforcement and the guarantees are weaker.
 | pi mechanism | Claude Code variant | Guarantee lost |
 |---|---|---|
 | `workflows/*.js` sandbox (deterministic dispatch, loops, retries) | The main session follows a numbered procedure in the skill (`Main session procedure` sections) | Control flow is model-followed, not code-enforced; a step can be skipped or reordered |
-| `acceptance.verify[]` host-run gates | The main session runs the sidecar gates itself through Bash (`scripts/run-gates.sh`) on the worker's commit, then the reviewer re-runs them | The orchestrator may forget; there is no runtime refusal of a PASS |
-| `outputSchema` / `structured_output` | Last-message fenced blocks (`STEP-VERDICT:` / `REVIEW-VERDICT:` + ` ```gate-report `, `FIX-REPORT:` + ` ```json `), extracted by the main session and checked with `jq` | No schema validation at the tool layer; truncation or prose drift is caught only by the `jq` check |
+| `acceptance.verify[]` host-run gates | The main session runs the sidecar gates itself through Bash (`claude/scripts/gates.sh`, with the sidecar's sha256 recorded before dispatch) on the worker's commit, then the reviewer re-runs them | The orchestrator may forget; there is no runtime refusal of a PASS |
+| `outputSchema` / `structured_output` | Last-message fenced blocks (`STEP-VERDICT:` / `REVIEW-VERDICT:` + ` ```gate-report `, `FIX-REPORT:` + ` ```json `), extracted by the main session and checked with `claude/scripts/check-block.sh` | No schema validation at the tool layer; truncation or prose drift is caught only by the `check-block.sh` run |
 | typed `gate:` on a child (validate-plan, classify-*) | The main session runs the same script through Bash after the child returns | Same scripts, but the decision to run them is prose |
 | `contact_supervisor` `need_decision` (child blocks until answered) | Child stops and ends with a `NEEDS-DECISION:` block; the main session asks the user, then resumes the child with `SendMessage` (or re-dispatches) | The child does not pause mid-work; it ends and is resumed |
 | `resume` of a retained child (fix rounds, cross-exam) | `SendMessage` to the finished agent (Claude Code resumes it in the background); fresh dispatch with the prior verdict as fallback | Resume ids are session-local; after `/clear` only the fresh-dispatch fallback works |
@@ -51,9 +51,11 @@ single-depth `Agent` dispatch.
 | `wf-scout` | haiku | Read, Grep, Glob, Bash, Write | — | builtin `scout` |
 | `wf-researcher` | sonnet / medium | Read, Write, WebSearch, WebFetch | — | builtin `researcher` |
 
-`Grep` and `Glob` are listed for builds that have them; the Claude Code build tested here (2.1.317)
-has neither and drops them silently, so every agent that must search the repo also has `Bash`
-(`rg`, `ls`, `git`). That is why `wf-planner` has Bash where its pi original did not.
+On Linux and macOS, Claude Code gives a subagent `Grep`/`Glob` only when its `tools` list names them
+and leaves out `Bash`; every agent here that lists them also lists `Bash`, so it searches with `rg`,
+`ls` and `git` through Bash. `wf-planner` has Bash, where its pi original did not, because it runs
+the plan validator, `--collect-only`-style test listings and `git log/show` (read-only by
+instruction).
 
 Models come from `~/.pi/agent/settings.json` `subagents.agentOverrides` as of 2026-11-03, mapped
 fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClaudeMd`: like pi's
@@ -64,15 +66,19 @@ fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClau
 
 - **Repo path.** Skills locate this repo's scripts with
   `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"` (works whether the skill dir is the symlink
-  in `~/.claude/skills` or the real path). Scripts: `"$WFS/scripts/<name>.sh"`. Never a hardcoded
-  home path.
+  in `~/.claude/skills` or the real path). Scripts: `"$WFS/scripts/<name>.sh"`. Shell variables do
+  not persist between Bash calls, so every command that uses `$WFS` starts with that assignment.
+  Never a hardcoded home path.
 - **Dispatch.** `Agent` with `subagent_type: "wf-…"`; parallel children are several `Agent` calls
-  in one message. Pass paths, not content. Each child writes its detail to a file; the main
+  in one message. Never fork (`subagent_type: "fork"`) during a procedure: a fork inherits `Agent`
+  and breaks single depth. Subagents run in the background: after a dispatch, wait for a completion
+  notification from every agent before any file or gate check; a check before that is not a
+  failure. Pass paths, not content. Each child writes its detail to a file; the main
   session reads files only as a procedure step requires.
 - **Final blocks.** A child's machine-readable result is the last fenced block of its reply,
   preceded by a marker line (`STEP-VERDICT:`, `REVIEW-VERDICT:`, `FIX-REPORT:`, `ENVELOPE:`,
   `NEEDS-DECISION:`). The main session copies the block verbatim into a file in the stage directory
-  with the Write tool and checks it with `jq` before using it. A missing or invalid block is a failed
+  with the Write tool and checks it with `claude/scripts/check-block.sh` before using it. A missing or invalid block is a failed
   child, never an implied PASS.
 - **Stage directories.** Every procedure writes `brief.json` (the stage envelope, see the
   `coordinator` skill) and `result.json` into its stage directory, as the pi workflows did, so runs
@@ -82,9 +88,12 @@ fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClau
   ToolSearch (`select:SendMessage`) before first use. If it fails, re-dispatch a fresh agent with the
   prior result's file path.
 - **Helpers.** `claude/scripts/check-block.sh <step-verdict|review-verdict|envelope|fix-report> <file>`
-  (schema check, the `outputSchema` stand-in) and `claude/scripts/gates.sh <step.md> <commit> [repo]`
-  (runs a sidecar's runnable gates through `scripts/run-gates.sh`, the `acceptance.verify` stand-in).
-  Both print one JSON object and exit 0.
+  (schema check, the `outputSchema` stand-in; also rejects a PASS that contradicts its own gates,
+  findings or ledger gaps) and `claude/scripts/gates.sh <abs step.md> <commit> <sidecar-sha256> [repo]`
+  (runs a sidecar's runnable gates through `scripts/run-gates.sh`, the `acceptance.verify` stand-in;
+  fails closed when the sidecar changed since its hash was recorded or has no runnable gate). Both
+  print one JSON object and exit 0. Run `gates.sh` with Bash `timeout: 600000` (or in the
+  background) and wait for its output; see the `executor` skill.
 - **Questions.** Only the main session talks to the user (`AskUserQuestion` is not available to
   subagents).
 

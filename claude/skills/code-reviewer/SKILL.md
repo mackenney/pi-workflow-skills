@@ -52,6 +52,9 @@ COMMITS_AHEAD=$(git log "$BASE_BRANCH"..HEAD --oneline 2>/dev/null)
 PR_INFO=$(gh pr view --json number,url 2>/dev/null)
 ```
 
+Shell variables do not persist between Bash calls: every later script command below starts with the
+same `WFS=` assignment.
+
 | Situation | Target |
 |---|---|
 | Only uncommitted changes, no commits ahead, no PR | `git diff HEAD` (offer `--staged` if large) |
@@ -103,14 +106,16 @@ Target: <target line>
 Write your findings (markdown, every finding with file:line + evidence + severity P0/P1/P2) to <dir>/angle-<i>.md.
 [User notes for this stage: <notes>]
 ```
-Last angle gets `model: <diversityModel>` when set. Record each agent id. An angle whose file is
-missing or empty failed: retry each failed angle once (fresh, output `<dir>/angle-<i>-retry.md`).
+Last angle gets `model: <diversityModel>` when set. Record each agent id. Wait for a completion
+notification from every angle before checking files (a check before that is not a failure). An
+angle whose file is missing or empty failed: retry each failed angle once (fresh, output `<dir>/angle-<i>-retry.md`).
 Still missing → the round **fails** at `angles` (a missing angle is a missing perspective; never
 synthesize the survivors into a PASS). Standalone with no loop: fall back to a single-agent review
 and say so.
 
-**R2. Cross-exam (parallel, default on).** For every angle, in one message, `SendMessage` to that
-angle's agent id (it resumes with its own review context, never another reviewer's):
+**R2. Cross-exam (parallel, default on).** Load `SendMessage` with ToolSearch (`select:SendMessage`)
+if it is deferred. For every angle, in one message, `SendMessage` to that angle's agent id (it
+resumes with its own review context, never another reviewer's):
 ```
 mode: "cross-exam"
 Cross-examine the other reviewers' findings: <paths of the other angle files>.
@@ -125,12 +130,12 @@ the gap for synthesis. Never block the round on it.
 ```
 mode: "synthesis"
 Target: <target line> [Repo] [Review range]
-Angle findings files: <dir>/angle-*.md (the surviving ones, retry paths where used)
-[Cross-exam files: <dir>/angle-*-xexam.md] [Missing cross-exam: <which>]
+Angle findings files: <explicit comma-separated paths of the surviving angle files, retry paths where used>
+[Cross-exam files: <explicit comma-separated paths of the -xexam.md files>] [Missing cross-exam: <which>]
 Write JSON to <dir>/synthesis.json, exactly: {"blockers":[{"title","file","line","evidence","fix"}],"important":[...same shape],"refuted":[{"title","reason"}]}. blockers = P0 (must fix before merge); important = P1 only; P2/nits/hygiene go in an optional "nits" array, never in important (the loop stops when blockers and important are both empty); refuted = angle findings you rejected with evidence.
 Write the human-facing review (INLINE_COMMENTS, GENERAL_REVIEW, INTERNAL_NOTES) to <dir>/synthesis.md.
 ```
-Run `bash "$WFS/scripts/classify-review.sh" <dir>/synthesis.json`. `error` set → the round fails
+Run `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/classify-review.sh" <dir>/synthesis.json`. `error` set → the round fails
 at `synth` (an off-schema report is not "zero findings"). `blockers == 0 && important == 0` → state
 `PASS`, stop (no fact-check needed).
 
@@ -138,7 +143,7 @@ at `synth` (an off-schema report is not "zero findings"). `blockers == 0 && impo
 ```
 Fact-check the review synthesis at <dir>/synthesis.json (target: <target>[, repo <repo>]). One claim per blocker/important finding: is the defect real at the cited file:line? Write {claims:[{claim, verdict, evidence}]} to <dir>/factcheck.json.
 ```
-`bash "$WFS/scripts/classify-factcheck.sh" <dir>/factcheck.json`; `error` or `total` 0 → `FAIL` at
+`WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/classify-factcheck.sh" <dir>/factcheck.json`; `error` or `total` 0 → `FAIL` at
 `factcheck`, stop (fail closed). Without fact-check in this run, skip to R5 only if fixing was asked;
 otherwise stop with state `REPORTED`.
 
@@ -147,7 +152,8 @@ user), stop. Otherwise `wf-worker`:
 ```
 Target: <target> [Repo] [Review range]
 <scope text>
-Skip any finding the fact-check at <dir>/factcheck.json marks REFUTED; for DISPUTED/UNVERIFIABLE ones, fix only if you can confirm the defect yourself.
+[Only when R4 ran this round:] Skip any finding the fact-check at <dir>/factcheck.json marks REFUTED; for DISPUTED/UNVERIFIABLE ones, fix only if you can confirm the defect yourself.
+[Without R4:] No fact-check ran: fix a finding only after confirming the defect yourself; skip it otherwise.
 Re-run the repo's relevant tests/lint after fixing and, if you changed anything, commit with an imperative message.
 End with the FIX-REPORT: line and json block: fixed (titles), escalated ({title, why}: needs the user), skipped ({title, why}: refuted/unconfirmed/out of scope nits).
 ```
@@ -159,7 +165,7 @@ the finding, or you disagree with it." `trivial`: "Fix only trivial items in <di
 (blockers, important and nits alike): typos, stale paths/names, doc or comment drift, one-line
 mechanical corrections with no behaviour change. Escalate every other blocker/important finding;
 leave other nits alone."
-Save the block to `<dir>/fix-report.json`; `"$WFS/claude/scripts/check-block.sh" fix-report` not ok
+Save the block to `<dir>/fix-report.json`; `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; "$WFS/claude/scripts/check-block.sh" fix-report <dir>/fix-report.json` not ok
 → `FAIL` at `fix`, stop. Any `escalated` → state `NEEDS_DECISION`, stop. Last round → state
 `FIXED_UNREVIEWED` (fixes made but not re-reviewed), stop. Otherwise next round.
 
@@ -170,9 +176,11 @@ claims - see <fcPath>" if the last fact-check has `disputed > 0`, each escalated
 `<reviewDir>/brief.json` (`coordinator` envelope): `stage: "review"`; status `needs-decision` when
 pendingDecisions is non-empty, else `done` for `PASS`/`FIXED_UNREVIEWED`/`NEEDS_DECISION`/`REPORTED`,
 `blocked` for infrastructure, otherwise `failed`; summary `review <STATE> after <n> round(s); last
-synthesis: <b> blockers, <i> important.`; `FIXED_UNREVIEWED` adds the `info` actionable "last round's
-fixes were not re-reviewed; add a round to verify them"; `artifacts.primary` = last `synthesis.json`.
-Check it with `check-block.sh envelope`.
+synthesis: <b> blockers, <i> important.`; actionables (max 12): one `decision` per pendingDecisions
+entry; a `fix` "<stage>: <reason>" for any state other than `PASS`/`NEEDS_DECISION`/`REPORTED`/
+`FIXED_UNREVIEWED`; for `FIXED_UNREVIEWED` the `info` "last round's fixes were not re-reviewed; add a
+round to verify them"; `artifacts.primary` = last `synthesis.json`. Check it with
+`check-block.sh envelope`.
 
 ## Main session procedure — report and follow-up
 

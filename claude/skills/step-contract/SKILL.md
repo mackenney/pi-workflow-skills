@@ -105,7 +105,7 @@ Claude Code has worker agents for the **standard** (`wf-worker`) and **deep** (`
 ## The `step-NN.gates.json` sidecar
 
 One sidecar per step file, same basename with `.gates.json`. The orchestrating session runs it
-mechanically (`scripts/run-gates.sh` on the worker's commit, see the `executor` skill); the
+mechanically (`claude/scripts/gates.sh` on the worker's commit, see the `executor` skill); the
 markdown step file is what humans read. `validate-plan.sh` cross-checks the two do not disagree.
 
 ```json
@@ -135,8 +135,9 @@ A sidecar may pre-set only `"result": "n/a"` (with `reason`) or `"result": "defe
 
 The last content of a worker's reply is a `STEP-VERDICT:` line followed by this object in a fenced
 ` ```gate-report ` block — never mid-message, never truncatable from the front, nothing after it.
-The orchestrator extracts it verbatim, saves it as JSON and checks it with `jq`; a missing or
-invalid block is a failed worker.
+The orchestrator extracts it verbatim, saves it as JSON and checks it with
+`claude/scripts/check-block.sh`; a missing or invalid block (including a PASS with a failed gate) is
+a failed worker.
 
 ```json
 {
@@ -180,19 +181,20 @@ Same placement rule: a `REVIEW-VERDICT:` line followed by a fenced ` ```gate-rep
 An agent that hits a product, architecture or scope decision its task did not approve stops and
 ends its reply with a `NEEDS-DECISION:` line followed by a fenced block: the decision, the options,
 its recommendation, and the commit holding any work so far. It does not guess and does not end with
-a bare question. The orchestrator asks the human and resumes the agent (`SendMessage`) or
-re-dispatches it with the answer.
+a bare question. The orchestrator asks the human and resumes the agent (`SendMessage`, loaded with
+ToolSearch first if deferred) or re-dispatches it with the answer.
 
 ## Resuming a stopped step
 
 A step that stopped after its commit exists is resumed, not re-implemented (`executor` skill,
-"Resume"). The orchestrator first proves `commit` exists and descends from `base_commit` (or the
-plan's base) with `scripts/commit-check.sh`; otherwise the step is `blocked`. `from`: `gates`
-(re-run the sidecar gates on `commit`, which must be checked out, then review), `review` (review
-`commit`), `fix` (continue the worker with the human's guidance — resumed with `SendMessage` if it
+"Resume"). The orchestrator first proves `commit` exists and descends from the run's `baseCommit`
+(or the sidecar's `base_commit`) with `scripts/commit-check.sh`; with neither, or a failed check, the
+step is `blocked`. `from`: `gates` (re-run the sidecar gates on `commit`, which must be checked out,
+then review), `review` (review `commit`), `fix` (continue the worker with the human's guidance — resumed with `SendMessage` if it
 is still in this session, else a fresh worker from `commit` — then review), `ci` (CI read bound to
 `commit`, then ledger), `ledger` (apply the ledger from the prior `result.json` only). Every
-non-PASS step result records `resumePoint: {from, commit, workerAgentId}` in its `result.json`.
+non-PASS step result records `resumePoint: {from, commit, workerAgentId, args}` in its `result.json`,
+with the resolved base in `args.baseCommit`.
 
 ## PROGRESS.md ledger — sections and row grammar
 
