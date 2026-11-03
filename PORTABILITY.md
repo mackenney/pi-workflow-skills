@@ -1,6 +1,6 @@
 # Portability: what of this pipeline moves to Claude Code or Codex, and what does not
 
-Status: guidance, written once (2026-09-24). **This file is documentation only.** Nothing in `pi-workflow-skills` renders, syncs, installs or checks agent definitions for Claude Code or Codex, and no code in this package writes under `~/.claude` or `~/.codex`. Those directories are user-global and outside any repository; setting them up is left to whoever uses this package with those harnesses. This file is not kept in sync automatically with `ORCHESTRATION-ENCODING.md`, the agents, or the skills — when they change, this file may lag.
+Status: guidance, written 2026-09-24; header, §2 and §6 updated 2026-11-03. Sections 1–5 are the original analysis. Since 2026-11-03 this package **does** ship Claude Code variants: `claude/skills/` and `claude/agents/` (see `claude/README.md`), linked into `~/.claude` by `claude-install.sh`, which writes there only when you run it. Nothing in the package targets `~/.codex`. This file is not kept in sync automatically with `ORCHESTRATION-ENCODING.md`, the agents, or the skills — when they change, this file may lag.
 
 Sources: `/tmp/pi_analysis/FACTCHECK-DIRECTION.md` sections D1 (Claude Code), D2 (Codex), D3 (SKILL.md portability), E2 (why a multi-harness renderer was rejected), as of 2026-09-24; official docs https://code.claude.com/docs/en/sub-agents, https://code.claude.com/docs/en/hooks, https://developers.openai.com/codex/subagents. Claude Code CLI 2.1.280 was installed locally when this was written; Codex was not. Both harness sections are single-vendor-source and will drift.
 
@@ -36,9 +36,9 @@ Everything that makes the pipeline *non-negotiable* — the runtime deciding pas
 
 **Verdicts.** No `outputSchema` / `structured_output` per child. Ask for the STEP-VERDICT block as the *last* content of the reply (the retro's original prose protocol) and parse it yourself; accept that truncation is your problem again.
 
-**Child → parent channel.** `SendMessage` with `to: main` (and to named siblings) exists from v2.1.206 and is bidirectional mid-run. It is a **coarser, non-blocking analogue** of `contact_supervisor`: there is no `need_decision` reason that pauses the child until the parent replies, and no reply-receipt contract. A ported worker's "escalate and wait" instruction becomes "send a message and stop"; the human has to restart or re-prompt.
+**Child → parent channel.** `SendMessage` with `to: main` (and to named siblings) exists from v2.1.206 and is bidirectional mid-run. The parent can also `SendMessage` a *finished* subagent, which resumes it in the background with its own context (docs, 2026-11-03); the variants use that for fix rounds, cross-exam and answers to a child's `NEEDS-DECISION:` block. It is a **coarser, non-blocking analogue** of `contact_supervisor`: there is no `need_decision` reason that pauses the child until the parent replies, and no reply-receipt contract. A ported worker's "escalate and wait" instruction becomes "send a message and stop"; the human has to restart or re-prompt.
 
-**Skills.** `skills:` frontmatter preloads skill content into the subagent. Point it at the `step-contract`, `planner`, `fact-checker`, `code-reviewer` skills (the existing `claude-install.sh` symlinks this package's skills into `~/.claude/skills`; it is skills-only and unchanged by this design).
+**Skills.** `skills:` frontmatter preloads skill content into the subagent. Point it at the `step-contract`, `planner`, `fact-checker`, `code-reviewer` skills. A skill with `disable-model-invocation: true` cannot be preloaded, so the Claude Code `step-contract` variant drops it and sets `user-invocable: false` instead (verified: it still preloads). `claude-install.sh` now links the Claude Code variants under `claude/`, never the pi originals (§6).
 
 **Not portable at all.** `runs.lanes` waves, `resume` fix loops with a retained child, `worktree: true` managed worktrees with patch manifests, `modelScope`, missions/`state`, `acceptanceRole` inference, `timeoutMs`/`toolBudget` per agent.
 
@@ -70,3 +70,25 @@ Everything that makes the pipeline *non-negotiable* — the runtime deciding pas
 - Not a sync target. No generator in this package emits `.claude/agents/*.md` or `.codex/agents/*.toml`, and none is planned (fact-check E2: a three-harness renderer is the most expensive part of the design and buys the least, because the target harnesses cannot execute what the roles exist to serve).
 - Not a drift monitor. If the pi agents or skills change, this file does not update.
 - Not a claim that the pipeline "works" on Claude Code or Codex. It claims that the *roles and rubric* are prose you can reuse, and lists what you lose.
+
+## 6. Claude Code variants (2026-11-03)
+
+`claude/skills/<name>/SKILL.md` holds a Claude Code variant of every skill; `claude/agents/wf-*.md` holds the role agents they dispatch. `claude/README.md` has the full pi → Claude Code mapping and the guarantees lost. In short, this goes further than the §4 recipe: instead of leaving orchestration to a human, each skill's "Main session procedure" inlines its workflow's control flow (stages, loop limits, retries, fail-closed checks, resume points), and the main session runs the same host scripts through Bash. Delegation is single-depth: no agent lists `Agent`, because Claude Code otherwise lets subagents nest up to three levels.
+
+Decisions recorded here:
+- Layout `claude/{skills,agents,scripts}`, not `skills-cc/`: one top-level directory per harness, with names that match the pi originals.
+- Dropped: `wf-host-command` (main session runs `scripts/*.sh`), `wf-flash-worker` (DeepSeek, disabled in pi; the `fast` executor tier is blocked in Claude Code), cross-vendor review lanes (the diversity angle runs on `sonnet`; vendor diversity is lost).
+- Added: `wf-worker`, `wf-scout`, `wf-researcher` stand in for pi's builtin `worker`/`delegate`, `scout` and `researcher`. The built-in `general-purpose` agent is never used because its tools include `Agent`.
+- `claude/scripts/check-block.sh` (schema check of extracted verdict/envelope/fix blocks) and `claude/scripts/gates.sh` (sidecar → `run-gates.sh`) partly restore what `outputSchema` and `acceptance.verify` enforced. All `scripts/*` gates work standalone (`tests/scripts.test.sh`: 198/198 on 2026-11-03).
+- Lane worktrees for waves are created by the main session (`git worktree add -b lane/<step>`), because the Agent tool's `isolation: "worktree"` branches from the default branch, not from the wave base.
+- The Claude Code `Workflow` tool (scripted multi-agent orchestration) was not used: it needs per-run opt-in and the user asked for native `Agent` dispatch.
+
+Verified on Claude Code 2.1.317 (2026-11-03), with repo-local `.claude/` symlinks and no change to `~/.claude`:
+- All ten skills and all nine agents load through symlinks; one `wf-scout` dispatch wrote its file.
+- `${CLAUDE_SKILL_DIR}` expands to the **symlink** path, so skills resolve the repo with `readlink -f "${CLAUDE_SKILL_DIR}/../../.."`.
+- `step-contract` with `user-invocable: false` is preloaded into `wf-step-reviewer`; that agent has no `Agent` tool.
+- This build has no `Grep`/`Glob` tools; agents list them for builds that do, and every agent that must search also has `Bash`.
+- `claude-install.sh --dir <scratch>`: links, is idempotent, migrates a legacy link to a pi original, skips a foreign link, and `--uninstall` removes only its own links.
+- A one-step toy plan (tier standard, scratch repo) run through the `executor` variant end to end with `claude -p`: `wf-worker` committed with a valid STEP-VERDICT, `gates.sh` 3/3, `wf-step-reviewer` PASS (fails-before checked at the base commit), `ledger-apply` ticked the step, `terminal-gate` ok. `check-block.sh envelope` caught one brief written without `artifacts`, and the orchestrator fixed it before continuing. `ledger-apply` leaves PROGRESS.md modified and uncommitted, as in pi.
+
+Not verified: wave execution (Procedure B) with real lane merges, the planner and review loops with real models, `NEEDS-DECISION:` round trips, and CI binding. `claude -p --debug` was not used to confirm that the agents' frontmatter has no unrecognized fields.

@@ -2,7 +2,10 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-SKILLS_DIR="$REPO_DIR/skills"
+CC_SKILLS_DIR="$REPO_DIR/claude/skills"
+CC_AGENTS_DIR="$REPO_DIR/claude/agents"
+# Older versions of this script linked the pi originals; those links are ours to migrate, never to keep.
+LEGACY_SKILLS_DIR="$REPO_DIR/skills"
 TARGET_DIR="$HOME/.claude"
 UNINSTALL=false
 
@@ -10,12 +13,15 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Install skills from this repo as symlinks into a Claude skills directory.
-Fallback setup for agents that use ~/.claude/ instead of pi's native skill loader.
+Link the Claude Code variants of this repo's skills and agents into a Claude directory:
+  claude/skills/<name>  -> <dir>/skills/<name>
+  claude/agents/<name>.md -> <dir>/agents/<name>.md
+The pi originals under skills/ are never linked. A link left by an older version of this
+script (pointing at skills/<name>) is replaced by the Claude Code variant.
 
 Options:
   -d, --dir <path>   Target Claude directory (default: ~/.claude)
-  -u, --uninstall    Remove symlinks instead of creating them
+  -u, --uninstall    Remove this repo's symlinks (variants and legacy pi links)
   -h, --help         Show this help
 
 EOF
@@ -42,35 +48,63 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-SKILLS_TARGET="$TARGET_DIR/skills"
+# install_link <source> <link> [legacy-source]
+install_link() {
+  local src="$1" link="$2" legacy="${3:-}"
+  if [[ -L "$link" && "$(readlink "$link")" == "$src" ]]; then
+    echo "exists    $link"
+  elif [[ -n "$legacy" && -L "$link" && "$(readlink "$link")" == "$legacy" ]]; then
+    ln -sfn "$src" "$link"
+    echo "migrated  $link -> $src  (was the pi original)"
+  elif [[ -e "$link" || -L "$link" ]]; then
+    echo "conflict  $link  (exists but points elsewhere — skipping)"
+  else
+    ln -s "$src" "$link"
+    echo "linked    $link -> $src"
+  fi
+}
 
+# uninstall_link <link> <source>...
+uninstall_link() {
+  local link="$1"; shift
+  if [[ -L "$link" ]]; then
+    local cur; cur="$(readlink "$link")"
+    for src in "$@"; do
+      if [[ "$cur" == "$src" ]]; then
+        rm "$link"
+        echo "removed   $link"
+        return
+      fi
+    done
+    echo "skipped   $link  (exists but is not a symlink to this repo)"
+  elif [[ -e "$link" ]]; then
+    echo "skipped   $link  (exists but is not a symlink to this repo)"
+  else
+    echo "skipped   $link  (not found)"
+  fi
+}
+
+SKILLS_TARGET="$TARGET_DIR/skills"
+AGENTS_TARGET="$TARGET_DIR/agents"
 if [[ "$UNINSTALL" == false ]]; then
-  mkdir -p "$SKILLS_TARGET"
+  mkdir -p "$SKILLS_TARGET" "$AGENTS_TARGET"
 fi
 
-skills=("$SKILLS_DIR"/*)
-
-for skill_path in "${skills[@]}"; do
-  skill_name="$(basename "$skill_path")"
-  link="$SKILLS_TARGET/$skill_name"
-
+for skill_path in "$CC_SKILLS_DIR"/*/; do
+  skill_path="${skill_path%/}"
+  name="$(basename "$skill_path")"
   if [[ "$UNINSTALL" == true ]]; then
-    if [[ -L "$link" && "$(readlink "$link")" == "$skill_path" ]]; then
-      rm "$link"
-      echo "removed   $link"
-    elif [[ -e "$link" ]]; then
-      echo "skipped   $link  (exists but is not a symlink to this repo)"
-    else
-      echo "skipped   $link  (not found)"
-    fi
+    uninstall_link "$SKILLS_TARGET/$name" "$skill_path" "$LEGACY_SKILLS_DIR/$name"
   else
-    if [[ -L "$link" && "$(readlink "$link")" == "$skill_path" ]]; then
-      echo "exists    $link"
-    elif [[ -e "$link" ]]; then
-      echo "conflict  $link  (exists but points elsewhere — skipping)"
-    else
-      ln -s "$skill_path" "$link"
-      echo "linked    $link -> $skill_path"
-    fi
+    install_link "$skill_path" "$SKILLS_TARGET/$name" "$LEGACY_SKILLS_DIR/$name"
+  fi
+done
+
+for agent_path in "$CC_AGENTS_DIR"/*.md; do
+  name="$(basename "$agent_path")"
+  if [[ "$UNINSTALL" == true ]]; then
+    uninstall_link "$AGENTS_TARGET/$name" "$agent_path"
+  else
+    install_link "$agent_path" "$AGENTS_TARGET/$name"
   fi
 done

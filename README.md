@@ -21,6 +21,10 @@ investigate → spec → plan → execute → fact-check / e2e-test → code-rev
 | `coordinator` | The entry point: compiles a prose chain into stages backed by the workflows and agents, lists what it understood, runs it, and reads only short stage envelopes (details stay in files). |
 | `handoff` | Produces a controlled compaction — a handoff artifact plus a copy-paste message — before `/copy` + `/new`, a phase/agent boundary, or a worktree/subagent spin-off. |
 
+## Claude Code
+
+`claude/` holds Claude Code variants of all ten skills plus the `wf-*` agents they dispatch. Install with `./claude-install.sh` (symlinks into `~/.claude/skills` and `~/.claude/agents`; `--dir <path>` for another target, `--uninstall` to remove). It never links the pi originals. The variants keep the pipeline's roles, rubric, scripts and ledger, but the main session follows each workflow as a written procedure instead of the pi runtime enforcing it: gates are re-run through Bash, verdicts are parsed from final fenced blocks, and only the main session dispatches agents (single depth). `claude/README.md` lists every guarantee that is not enforced there. In Claude Code, invoke skills as `/executor`, `/coordinator` and so on.
+
 ## Install
 
 Not published to npm. Install via local path or git URL:
