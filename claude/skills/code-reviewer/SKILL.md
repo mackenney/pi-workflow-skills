@@ -13,7 +13,7 @@ fixed, round by round.
 
 This skill is read by two audiences:
 - **The main session** that runs `/code-reviewer`: it follows the "Main session procedure" sections
-  and is the only dispatcher.
+  and is the only dispatcher. Dispatch only `wf-*` agents; never fork (`subagent_type: "fork"`) or use `general-purpose`: both carry `Agent` and break single depth.
 - **`wf-code-reviewer`**, which preloads this skill: it follows "Reviewer role" and ignores the
   main-session sections.
 

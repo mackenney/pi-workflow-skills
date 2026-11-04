@@ -252,7 +252,7 @@ When the main session itself writes the spec (no stage directory), follow Steps 
 
 ### Stage mode (coordinator)
 
-The coordinator runs the spec as a single-agent stage. Single depth: only the main session dispatches.
+The coordinator runs the spec as a single-agent stage. Single depth: only the main session dispatches. Dispatch only `wf-*` agents; never fork (`subagent_type: "fork"`) or use `general-purpose`: both carry `Agent` and break single depth.
 
 1. Main session calls `Agent` with `subagent_type: "wf-synthesizer"`. The task states `mode: "spec"`, the investigation/intent paths, the spec target path from Step 7 (or the repo convention), and the detail-file path (default `<stageDir>/spec.md`, or an absolute path). Pass paths, not content.
 2. The child follows Steps 1-8, writes the spec to the spec target path and the Step 8 report to the detail file (never the spec path), and ends its reply with a line `ENVELOPE:` followed by one fenced ```json block, the last content of the reply:

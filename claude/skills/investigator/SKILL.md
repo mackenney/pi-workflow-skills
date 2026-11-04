@@ -7,7 +7,7 @@ description: Gathers ground-truth findings before planning or implementing, usin
 
 You are playing the **Investigator** role. Your job is to gather ground-truth facts before any planning or implementation begins. You produce findings — not solutions.
 
-Delegation is single-depth: the main session (you) is the only dispatcher. Scouts are `wf-scout` agents (read-only, haiku); web research uses `wf-researcher`; both are leaf agents and never dispatch anything. Do not use the built-in `general-purpose` agent.
+Delegation is single-depth: the main session (you) is the only dispatcher. Scouts are `wf-scout` agents (read-only, haiku); web research uses `wf-researcher`; both are leaf agents and never dispatch anything. Dispatch only `wf-*` agents; never fork (`subagent_type: "fork"`) or use `general-purpose`: both carry `Agent` and break single depth.
 
 ## When to Investigate vs. Answer Directly
 

@@ -26,7 +26,7 @@ assignment (`WFS="…"; "$WFS/scripts/…"`).
 
 | Script | Use |
 |---|---|
-| `"$WFS/claude/scripts/gates.sh" <abs step.md> <commit> <sidecarSha> [repo]` | runs the sidecar's runnable gates (not `n/a`/`deferred`) on `<commit>`, which must be HEAD in `repo` → `{ok, results[], skipped[]}`; `ok: false` when the sidecar's sha256 is not `sidecarSha` or no gate is runnable |
+| `"$WFS/claude/scripts/gates.sh" <abs step.md> <commit> <sidecarSha> [repo]` | runs the sidecar's runnable gates (not `n/a`/`deferred`) on `<commit>`, which must be HEAD in `repo` → `{ok, results[], skipped[]}`; `ok: false` with `error` and no `results` when the sidecar's sha256 is not `sidecarSha`, no gate is runnable, or `repo` is dirty outside the plan dir (the `plans` root for `plans/<name>/`) |
 | `"$WFS/claude/scripts/check-block.sh" <kind> <file>` | schema check of an extracted final block (`step-verdict`, `review-verdict`, `envelope`, `fix-report`) → `{ok, errors[]}` |
 | `"$WFS/scripts/commit-check.sh"` (stdin `{commit, base, repo?}`) | resume guard: commit exists and descends from base |
 | `"$WFS/scripts/ledger-apply.sh"` (stdin `{planDir, ledgers}` or `{planDir, fromResult, steps?}`) | ledger rows + `## Steps` tick |
@@ -37,14 +37,28 @@ assignment (`WFS="…"; "$WFS/scripts/…"`).
 All scripts print one JSON object and exit 0; read the JSON, not the exit code.
 
 **Running `gates.sh`.** Gates run sequentially and may take longer than a foreground Bash call
-allows. Run it with Bash `timeout: 600000`, or with `run_in_background: true` when the runnable gates'
-`timeoutMs` sum exceeds that. If the call is moved to the background, wait for its completion
-notification and read its output file; no JSON yet is not a result, never a pass or a fail.
+allows. Run it with Bash `timeout: 600000`, or with `run_in_background: true` and `timeout` =
+min(Σ runnable `timeoutMs` (default 900000 each) + 60000, 7200000) when that sum exceeds 540000. In
+an unattended session (`-p`, Agent SDK) the platform stops background commands at that timeout
+(at most 2 h): there, a sum over 7200000 → `BLOCKED` at `gates` (split the step's gates).
+Interactive sessions have no background limit. If the call is moved to the background, wait for its
+completion notification and read its output file; no JSON yet is not a result, never a pass or a
+fail. A background stop notice, or an exit without JSON → `BLOCKED` at `gates`, `resumePoint {from: gates}`.
 
-**Clean tree.** "Clean" means `git status --porcelain -- . ':(exclude)<planDir>' ':(exclude)<stageDir>'`
-prints nothing (paths relative to the repo root; drop an exclude whose directory is outside the
-repo). The plan and run directories are untracked or script-written (stage files, PROGRESS.md) and
-never count as dirty; everything else does.
+**`gates.sh` outcomes.** `error` set and no `results` array → `BLOCKED` at `gates` (infrastructure:
+usage, bad sha, unreadable sidecar, HEAD mismatch, dirty tree), `resumePoint {from: gates}`; an
+error saying the sidecar changed → `BLOCKED` ("gate sidecar edited after dispatch; restore it to
+match plan.json"), resume from `gates` only once it is restored. `results` containing a fail → as
+the calling step says.
+
+**Clean tree.** "Clean" means
+`git -C <repo> status --porcelain -- ':(top)' ':(top,exclude)<planRel>' ':(top,exclude)<stageRel>'`
+exits 0 and prints nothing. `<planRel>` is `plans` when planDir is `<repo>/plans/<name>/` (sibling
+untracked plan dirs show as one `?? plans/` line), else planDir relative to the repo root;
+`<stageRel>` likewise, dropped when inside planDir. Drop an exclude whose directory is outside the
+repo. A non-zero exit is not clean. In a lane, check `-C <lane path>` with no excludes. The plan and
+run directories are untracked or script-written (stage files, PROGRESS.md) and never count as dirty;
+everything else does.
 
 **Resuming agents.** `SendMessage` can be a deferred tool: load it with ToolSearch
 (`select:SendMessage`) before its first use.
@@ -63,8 +77,9 @@ the child failed. Never repair a child's JSON by hand and never infer a verdict 
 | `fast` | none in Claude Code (`wf-flash-worker` was not ported) → the step is **BLOCKED**; ask whether to run it as `standard` |
 | `frontier` or other | none → **BLOCKED**: the step must be split or re-planned as deep |
 
-Reviewer: `wf-step-reviewer`. Gate classes, sidecar schema, verdict schemas and ledger grammar are in
-`step-contract`.
+Reviewer: `wf-step-reviewer`. Gate classes, sidecar schema, verdict schemas and ledger grammar are
+in `step-contract`. **Single depth.** Dispatch only `wf-*` agents; never fork
+(`subagent_type: "fork"`) or use `general-purpose`: both carry `Agent` and break single depth.
 
 ---
 
@@ -93,7 +108,8 @@ step files — workers read them.
 
 **Resuming a plan:** verify completed steps against `git log`, resume at the first incomplete wave.
 Never re-run a completed step; if its commit is missing, investigate before re-running. If a stage
-directory holds a non-PASS `result.json`, continue that step with its `resumePoint` (Resume, below).
+directory holds a non-PASS `result.json`, continue that step with its `resumePoint` (Resume, below);
+its `args` carry the `sidecarSha` recorded at first dispatch.
 
 ## Choosing the Dispatch
 
@@ -114,15 +130,23 @@ else `<planDir>/runs/<YYYY-MM-DDTHHMMSS>-<step-or-wave>/`. A resumed run gets a 
 ## Procedure A — one step (was `execute-step.js`)
 
 Inputs: `stepFile`, `planDir`, optional `baseCommit`, `tier`, `pr`, `maxFixRounds` (default 2),
-`ledgerFile` (default `PROGRESS.md`), `notes`, `resume`. `stepFile` and `planDir` are absolute
-paths. `ledgerPath = <planDir>/<ledgerFile>`; `sidecar = <stepFile without .md>.gates.json`.
+`ledgerFile` (default `PROGRESS.md`), `notes`, `resume`, `sidecarSha` (required with `resume`).
+`stepFile` and `planDir` are absolute paths. `ledgerPath = <planDir>/<ledgerFile>`;
+`sidecar = <stepFile without .md>.gates.json`.
 
 **A1. Load the contract (gate).** Parse the sidecar (`jq . <sidecar>`). Unreadable, invalid JSON or
-no `gates` array → result `BLOCKED` ("gate sidecar unusable"), go to A7. Freeze it before any
-dispatch: `sha256sum <sidecar>` → `sidecarSha`. Keep `sidecarSha` in your own context (copy it into
-`result.json` for the audit trail only): the worker can write the plan dir, so every `gates.sh` call
-passes the value you hold, never one read back from a file. Resolve the tier and worker agent
-(Setup); no agent → `BLOCKED`, A7. `base = baseCommit ?? sidecar.base_commit`; neither → on a fresh
+no `gates` array → result `BLOCKED` ("gate sidecar unusable"), go to A7. Check it against this
+step's plan.json entry (only this step: whole-plan `validate-plan.sh` fails once ledger rows are
+discharged or waived):
+`jq -n --slurpfile c <sidecar> --slurpfile p <planDir>/plan.json '$c[0] as $c | [$p[0].steps[] | select(.id == $c.step)] | length == 1 and (.[0].gates == $c.gates) and ((.[0].coverage // []) == ($c.coverage // []))'`
+prints anything but `true` → `BLOCKED` ("sidecar drifted from plan.json"), A7. Freeze it before any dispatch:
+`sha256sum <sidecar> | cut -d' ' -f1` → the current hash. Fresh run: `sidecarSha` = that hash. With
+`resume`: `sidecarSha` absent → `BLOCKED` ("resume needs the sidecar hash recorded at first
+dispatch"); not equal to the current hash → `BLOCKED` ("sidecar changed since the stopped run;
+restore it, or have the human approve the new hash and pass it as `sidecarSha`"), A7. The worker can
+write the plan dir, so every `gates.sh` call passes the value from your inputs or first hash, never
+one re-read from a file mid-run; A7 records it in `result.json` and every resume entry's `args`.
+Resolve the tier and worker agent (Setup); no agent → `BLOCKED`, A7. `base = baseCommit ?? sidecar.base_commit`; neither → on a fresh
 run `git rev-parse HEAD`, with `resume` → `BLOCKED` ("resume needs baseCommit (or the sidecar's
 base_commit) to prove the commit descends from the step's base"), A7. Record which source `base`
 came from.
@@ -130,9 +154,9 @@ came from.
 **A2. Resume guard (gate, only with `resume`).** `resume` must be
 `{from: gates|review|fix|ci|ledger, commit: <7–40 hex>, guidance?, resultPath?, workerAgentId?}`;
 anything else → `BLOCKED`. Run `commit-check.sh` with `{commit, base}`; `ok: false` → `BLOCKED`
-with its error. `from: ledger` needs `resultPath` whose `ledger` exists; `from: ledger|ci` with a
-prior ledger for a different commit → `BLOCKED`; `from: ci` needs `pr`. Read `resultPath` as
-`prior`.
+with its error. Read `resultPath` as `prior`; a wave result (it has `board`) → `prior` is the board
+lane whose `step` is the sidecar's `step`. `from: ledger` needs a `prior` whose `ledger` exists;
+`from: ledger|ci` with a prior ledger for a different commit → `BLOCKED`; `from: ci` needs `pr`.
 
 **A3. Implement** (skipped when resuming from `gates`, `review`, `ci` or `ledger`).
 Dispatch the worker agent with this prompt (all lines, nothing pasted from other files):
@@ -163,22 +187,24 @@ A worker that ends with `NEEDS-DECISION:` instead: ask the human (quote the bloc
 **A4. Acceptance (gate) — the stand-in for pi's `acceptance.verify`.** After every worker reply
 (implement, resume-fix, or fix round):
 1. Extract the block to `<stageDir>/step-verdict[-fix-N].json`; `check-block.sh step-verdict`. Not
-   ok (includes PASS without a commit) → verdict is `FAIL`.
+   ok (includes PASS without a commit), or its `step` is not the sidecar's `step` → verdict is
+   `FAIL` (a wrong `step` would make ledger-apply tick another step).
 2. Worker verdict `FAIL`/`BLOCKED` → result = that state at stage `implement` (or `fix`);
    `resumePoint = {from: fix, commit}` with alternative `{from: gates, commit}` when a commit
    exists. Go to A7.
 3. Worker `PASS`: confirm `git rev-parse HEAD` is the verdict commit (else check it out), the tree
    is clean (Setup, "Clean tree"; staged or uncommitted work → FAIL), then run
-   `gates.sh <stepFile> <commit> <sidecarSha>` → `<stageDir>/gates[-fix-N].json`. An error saying
-   the sidecar changed → `BLOCKED` ("gate sidecar edited after dispatch; restore it to match
-   plan.json and re-run validate-plan.sh"), `resumePoint {from: gates}`. Otherwise `ok: false` →
-   result `FAIL` ("worker claimed PASS, gates failed: <ids>"), `resumePoint = {from: gates}`
-   (environment) with alternative `{from: fix}`. A7.
+   `gates.sh <stepFile> <commit> <sidecarSha>` → `<stageDir>/gates[-fix-N].json`. Error without
+   `results` → Setup, "`gates.sh` outcomes". A failing gate → result `FAIL` ("worker claimed PASS,
+   gates failed: <ids>"), `resumePoint = {from: gates}` (environment) with alternative `{from: fix}`. A7.
 
-Resume from `gates`: check out `commit`, run `gates.sh <stepFile> <commit> <sidecarSha>`; failing →
-`FAIL`, `resumePoint {from: fix}`, A7; passing → rebuild the verdict from `prior.verdict` (or the sidecar) with the fresh gate results
-and residual risk "resumed from gates: no fresh worker verdict". Resume from `review`: use
-`prior.verdict` (or rebuild from the sidecar) as the verdict.
+Resume from `gates`: check out `commit`, confirm the tree is clean, run `gates.sh <stepFile> <commit>
+<sidecarSha>`; error without `results` → Setup, "`gates.sh` outcomes"; a failing gate → `FAIL`,
+`resumePoint {from: fix}`, A7; passing → rebuild the verdict from `prior.verdict ?? prior.ledger`
+(or the sidecar) with the fresh gate results and residual risk "resumed from gates: no fresh worker
+verdict". Resume from `review`: rebuild it from `prior.verdict ?? prior.ledger` (or the sidecar).
+Either way write it to `<stageDir>/step-verdict.json` and run `check-block.sh step-verdict`; not ok
+→ `BLOCKED` at `gates`/`review` with its errors.
 
 **A5. Review loop** (skipped when resuming from `ci` or `ledger`). `round = 0`:
 1. Dispatch `wf-step-reviewer`:
@@ -191,10 +217,11 @@ and residual risk "resumed from gates: no fresh worker verdict". Resume from `re
    Worker STEP-VERDICT JSON: <stageDir>/step-verdict[-fix-N].json
    End with the REVIEW-VERDICT: line and the gate-report block.
    ```
-2. Extract to `<stageDir>/review-<round>.json`; `check-block.sh review-verdict`. Crash, no block or
-   not ok → dispatch the reviewer once more (fresh). Still no valid verdict → `BLOCKED` at `review`
-   ("reviewer failed twice (infrastructure)"), `resumePoint {from: review}`. A7. A reviewer crash
-   never spends a fix round.
+2. Extract to `<stageDir>/review-<round>.json`; `check-block.sh review-verdict`. If every error is a
+   "contradictory PASS", route it as a `FAIL` with its findings (step 4/5; do not edit the block).
+   Crash, no block or other errors → dispatch the reviewer once more (fresh). Still no valid
+   verdict → `BLOCKED` at `review` ("reviewer failed twice (infrastructure)"), `resumePoint {from:
+   review}`. A7. A reviewer crash never spends a fix round.
 3. `PASS` → A6.
 4. `FAIL` and `round >= maxFixRounds` → `FAIL` at `review`, `resumePoint {from: fix}`. A7.
 5. Otherwise `round += 1`; `SendMessage` the worker (`workerAgentId`; Setup, "Resuming agents"): "Reviewer findings: <path to
@@ -210,17 +237,18 @@ and residual risk "resumed from gates: no fresh worker verdict". Resume from `re
   `unknown` → `BLOCKED` (`stale`: push the step commit first). Non-green → `resumePoint {from: ci}`.
 - Ledger (gate): always once the review passed, ticking only on PASS:
   ```bash
-  WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; jq -c --arg p "<planDir>" --arg lf "<ledgerFile>" --argjson tick <true|false> \
-    '{planDir:$p, ledgerFile:$lf, ledgers:[{step, commit, tick:$tick, deferred, proxies_used, decisions_taken, pending_decisions}]}' \
+  WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; jq -c --arg p "<planDir>" --arg lf "<ledgerFile>" --arg s "<sidecar step>" --argjson tick <true|false> \
+    '{planDir:$p, ledgerFile:$lf, ledgers:[{step:$s, commit, tick:$tick, deferred, proxies_used, decisions_taken, pending_decisions}]}' \
     <stageDir>/step-verdict[-fix-N].json | "$WFS/scripts/ledger-apply.sh"
   ```
-  (`from: ci|ledger`: the ledger object comes from `prior.ledger`.) `ok: false` on a PASS step →
-  `BLOCKED` at `ledger`, `resumePoint {from: ledger}`.
+  (`from: ci|ledger`: the ledger object comes from `prior.ledger`; its `step` must be the sidecar's
+  `step`, else `BLOCKED` at `ledger` without running ledger-apply, which would tick the wrong
+  step.) `ok: false` on a PASS step → `BLOCKED` at `ledger`, `resumePoint {from: ledger}`.
 
 **A7. Persist and report.** Write `<stageDir>/result.json`:
 `{state: PASS|FAIL|BLOCKED, stage?, reason?, verdict, review?, gates?, ci?, ledger?, ledgerApply?,
-workerAgentId, resumePoint?: {from, commit, workerAgentId, args}, resumeAlternatives?: [...], resumedFrom?}`
-where each resume entry's `args` are this run's inputs with `baseCommit: <base>`, `resume = {from,
+sidecarSha, workerAgentId, resumePoint?: {from, commit, workerAgentId, args}, resumeAlternatives?: [...], resumedFrom?}`
+where each resume entry's `args` are this run's inputs with `baseCommit: <base>`, `sidecarSha`, `resume = {from,
 commit, workerAgentId, resultPath: <stageDir>/result.json}` and a fresh `stageDir`. Then write `<stageDir>/brief.json`
 (stage envelope, `coordinator` skill): `stage: "execute-step"`; `status` = `done` (PASS, no pending
 decisions) | `needs-decision` (PASS with pending decisions) | `failed` (FAIL) | `blocked`; summary
@@ -233,54 +261,71 @@ residual risks (`info`); max 12. Run `check-block.sh envelope` on it.
 
 ## Procedure B — a wave of independent atomic steps (was `execute-wave.js`)
 
-Inputs: `planDir`, `stepFiles[]`, optional `baseCommit`, `tier`, `ledgerFile`, `notes`. No fix
-rounds and no ledger writes inside the wave: lanes are unmerged.
+Inputs: `planDir`, `stepFiles[]` (absolute; resolve PROGRESS.md's `./step-NN-*.md` links before
+B.1), optional `baseCommit`, `tier`, `ledgerFile`, `notes`. No fix rounds and no ledger writes
+inside the wave: lanes are unmerged.
 
-1. **Contracts (gate).** Load every sidecar, record its `sidecarSha` and resolve every tier as in
-   A1; any failure blocks the whole wave before dispatch. Tree clean (Pre-Flight 5).
-   `base = baseCommit ?? git rev-parse HEAD`.
+1. **Contracts (gate).** Load and check every sidecar, record its `sidecarSha` and resolve every
+   tier as in A1 (fresh run); any failure blocks the whole wave before dispatch. Tree clean
+   (Pre-Flight 5). `base = baseCommit ?? git rev-parse HEAD`.
 2. **Lane worktrees.** Use the repo's worktree directory convention (`.wt/` if it exists, else
    `.worktrees/` if it exists, else ask the human). Per step `key = step file basename`:
-   `git worktree add -b lane/<key> <wtdir>/lane-<key> <base>`. Do not use the Agent tool's
+   `git worktree add -b lane/<key> <wtdir>/lane-<key> <base>`. If `lane/<key>` already exists (an
+   earlier run of this step), reuse it only when `commit-check.sh` `{commit: <its tip>, base}` is ok
+   (`git worktree add <wtdir>/lane-<key> lane/<key>`, and add the A3 "Resuming: commit <tip>…" line
+   to that worker's prompt); otherwise stop and ask the human. Do not use the Agent tool's
    `isolation: "worktree"`: it branches from the default branch, not from `base`.
-3. **Workers in parallel** — one `Agent` call per lane in a single message, at most 8 lanes per
-   message (the session caps concurrent subagents; launch the next batch when one finishes), with the
+3. **Workers in parallel** — one `Agent` call per lane, at most 8 lane agents running at once (the
+   first 8 in one message; launch the next lane on each completion notification). `Concurrent
+   subagent limit reached` is not a failure, although its text says not to retry: wait for a
+   running child's completion notification, then relaunch that lane. Each prompt is the
    A3 prompt plus: "Working directory: <absolute lane path>. Work only there (cd into it in every Bash
    call, absolute paths under it for Read/Edit/Write). You are in an isolated git worktree; commit
    there. Atomic step, independent of the other steps in this wave." Wait for every lane's completion
    notification, then check the main checkout is still clean (Setup, "Clean tree", also excluding
-   `<wtdir>`); dirty → a worker wrote outside its lane: stop the wave and report the paths.
+   `':(top,exclude)<wtdir>'`); dirty → a worker wrote outside its lane: stop the wave and report the paths.
 4. **Acceptance per lane (gate):** A4 steps 1–3, with `gates.sh <stepFile> <commit> <sidecarSha> <lane path>`.
 5. **Reviews in parallel** for every lane that passed A4 — one `wf-step-reviewer` per lane, batched
    as in 3, A5.1 prompt plus "The commit is on branch lane/<key>, checked out at <lane path>; run gates
    there. Do not edit anything." Crashed or invalid reviews are retried once (in one parallel batch);
    a lane whose review still fails is `BLOCKED` (re-review), never `FAIL`.
 6. **Board (persist).** `<stageDir>/result.json` =
-   `{state: PASS|PARTIAL|BLOCKED, board: [{step, stepFile, state, stage, commit, branch, worktree,
-   workerAgentId, resumeFrom, resumeAlternative, error, ledger: {step, commit, ledgerPath, gates,
+   `{state: PASS|PARTIAL|BLOCKED, board: [{step, stepFile, sidecarSha, state, stage, commit, branch,
+   worktree, workerAgentId, resumeFrom, resumeAlternative, error, ledger: {step, commit, ledgerPath, gates,
    deferred, proxies_used, decisions_taken, pending_decisions, residual_risks, review}}]}` —
    this is the shape `ledger-apply.sh {fromResult}` reads (it applies only `state: "PASS"` lanes).
    `step` and `ledger.step` are the sidecar's `step` (not the file basename `key`).
    Lane state: worker failed or invalid block → `FAIL` (`resumeFrom: fix`, alt `gates` if a commit
-   exists); claimed PASS but gates failed → `FAIL` (`resumeFrom: gates`, alt `fix`); review crashed
-   twice → `BLOCKED` (`resumeFrom: review`); review FAIL → `FAIL` (`resumeFrom: fix`); else `PASS`.
+   exists); gates.sh "sidecar changed" → `BLOCKED` (`resumeFrom: gates` once the sidecar is
+   restored, the reason in `error`); other gates.sh error without `results` → `BLOCKED`
+   (`resumeFrom: gates`); claimed PASS but a gate failed → `FAIL` (`resumeFrom: gates`, alt `fix`);
+   review crashed twice → `BLOCKED` (`resumeFrom: review`); review FAIL → `FAIL` (`resumeFrom:
+   fix`); else `PASS`.
    Write `brief.json` (`stage: "execute-wave"`, summary `N/M lanes PASS. Next: merge PASS lanes in
    step order, re-run their gates on the merged tree, then ledger-apply fromResult.`).
 7. **Integration** — for each `PASS` lane, in step order:
    1. Merge (or cherry-pick) `lane/<key>` onto the working branch.
    2. Mechanical conflict (imports, ordering) → resolve it, or dispatch a `wf-worker` with both
-      commits. Real logic conflict → do not auto-merge: abort, serialize those steps through
-      Procedure A, record the dependency the plan missed via `ledger-apply` `decisions_taken`, tell
-      the human.
-   3. After all merges, re-run every merged step's gates on the integrated tree (gate):
+      commits. Real logic conflict → do not auto-merge: abort, keep that lane's branch and worktree,
+      and after 7.5 run its step through Procedure A with `baseCommit: <wave base>`, `sidecarSha`
+      (from the board) and `resume: {from: fix, commit: <lane commit>, guidance: "in the main
+      checkout on the working branch (not the lane worktree), cherry-pick this commit onto
+      <integrated HEAD> and resolve the conflict with <steps>"}` (resolving it is new code, so never
+      `from: review`). Record the dependency the plan missed via `ledger-apply` `decisions_taken`,
+      tell the human.
+   3. After all merges, confirm the main checkout is clean (Setup, "Clean tree"), then re-run every
+      merged step's gates on the integrated tree (gate):
       `gates.sh <stepFile> "$(git rev-parse HEAD)" <sidecarSha>`. Lanes passed in isolation; only the
       integrated run proves the wave. A failure here stops the wave: report it, do not apply ledgers.
    4. Apply the lane ledgers (gate): `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; echo '{"planDir":"<planDir>","fromResult":"<stageDir>/result.json","steps":[<merged sidecar step ids>]}' | "$WFS/scripts/ledger-apply.sh"`.
-   5. Clean up: `git worktree remove --force <lane path>`, then `git branch -D lane/<key>`.
-8. **Non-PASS lanes:** merge the lane branch if it has a commit, then run Procedure A with
-   `baseCommit: <wave base>` and `resume: {from: <resumeFrom>, commit, workerAgentId}` (show the
-   human the alternative too).
-   Without a commit, re-run the step through Procedure A from scratch.
+   5. Clean up each merged lane (not one aborted in 7.2): `git worktree remove --force <lane
+      path>`, then `git branch -D lane/<key>`.
+8. **Non-PASS lanes** (a lane aborted in 7.2 follows 7.2 instead): merge the lane branch if it has a
+   commit, then run Procedure A with `baseCommit: <wave base>`, `sidecarSha: <lane sidecarSha>` and
+   `resume: {from: <resumeFrom>, commit, workerAgentId, resultPath: <stageDir>/result.json}` (show
+   the human the alternative too). Without a commit, re-run the step through Procedure A from
+   scratch. Remove the lane's worktree and branch (as in 7.5) only once its step reaches PASS; the
+   same holds for a lane aborted in 7.2.
 
 ---
 
@@ -320,8 +365,9 @@ ran). No one judges a deferred gate "insignificant".
 
 Read the envelope's `fix` actionable first; open `result.json` only for the detail it points at.
 
-- `blocked` (sidecar unusable or edited after dispatch, no worker for the tier, resume without a
-  base, ledger-apply failed, CI pending/none/stale, reviewer failed twice) → fix the artifact or wait for CI, then resume.
+- `blocked` (sidecar unusable, drifted from plan.json or edited after dispatch, gates.sh
+  infrastructure error, no worker for the tier, resume without a base or `sidecarSha`, ledger-apply
+  failed, CI pending/none/stale, reviewer failed twice) → fix the artifact or wait for CI, then resume.
 - `failed` at implement → environmental (missing tool, network, stale checkout) → fix it, check out
   the commit, resume from `gates` (no worker spent); real work left → resume from `fix` with the
   human's guidance; wrong gate/step → amend step file + sidecar, re-run `validate-plan.sh`, re-run
@@ -335,7 +381,8 @@ Read the envelope's `fix` actionable first; open `result.json` only for the deta
   for `fix`. `workerAgentId` only works within the session that created it; after `/clear` the
   fresh-worker fallback applies.
 - Agent launch failure or tool error → infrastructure blocker: report the exact error and repo
-  state; do not switch execution mode or do the step yourself.
+  state; do not switch execution mode or do the step yourself. Exception: `Concurrent subagent
+  limit reached` → wait for a running child to finish, then relaunch (B.3).
 
 Escalate immediately when: a wave has 3+ failing steps with no common fix; a change breaks tests the
 step never mentioned; the codebase diverges from plan assumptions; an irreversible action

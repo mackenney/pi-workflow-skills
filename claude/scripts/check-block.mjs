@@ -2,14 +2,21 @@
 // check-block.mjs <kind> <file.json> -> {"ok", "errors": [...]} on stdout. Always exits 0.
 // kind: step-verdict | review-verdict | envelope | fix-report.
 // Claude Code has no outputSchema: an agent's final fenced block is copied into a file by the main session and checked
-// here instead. Mirrors the STEP_VERDICT / REVIEW_VERDICT / ENVELOPE / FIX_REPORT schemas of workflows/*.js, plus the
-// verdict rules those schemas leave to prose (a PASS must not contradict its own gates/findings); fail closed.
+// here instead. Mirrors the STEP_VERDICT / REVIEW_VERDICT / ENVELOPE / FIX_REPORT schemas of workflows/*.js, plus
+// fail-closed additions: string-typed ledger fields, P0|P1|P2 severity, a proxy result needs a proxies_used entry, and
+// contradictory-PASS checks (a PASS must not contradict its own gates/findings). Length caps count code points, as
+// JSON Schema maxLength does.
 import fs from "node:fs";
 
 const out = (errors) => { process.stdout.write(JSON.stringify({ ok: errors.length === 0, errors }) + "\n"); process.exit(0); };
 const isObj = (x) => !!x && typeof x === "object" && !Array.isArray(x);
 
-function check(kind, file) {
+const KINDS = ["step-verdict", "review-verdict", "envelope", "fix-report"];
+const chars = (s) => [...s].length;
+
+function check(kind, file, ...extra) {
+  if (!kind || !file || extra.length) return ["usage: check-block.sh <" + KINDS.join("|") + "> <file.json>"];
+  if (!KINDS.includes(kind)) return ["unknown kind " + JSON.stringify(kind) + " (" + KINDS.join("|") + ")"];
   let v;
   try { v = JSON.parse(fs.readFileSync(file, "utf8")); } catch (e) { return ["cannot read JSON from " + file + ": " + e.message]; }
   if (!isObj(v)) return ["block must be a JSON object"];
@@ -82,13 +89,13 @@ function check(kind, file) {
     const keys = ["stage", "status", "summary", "actionables", "artifacts"];
     noExtra(keys); req(keys);
     isStr("stage"); oneOf("status", ["done", "needs-decision", "failed", "blocked"]);
-    if (typeof v.summary !== "string" || v.summary.length > 400) errors.push("summary must be a string of at most 400 chars");
+    if (typeof v.summary !== "string" || chars(v.summary) > 400) errors.push("summary must be a string of at most 400 chars");
     if (!Array.isArray(v.actionables) || v.actionables.length > 12) errors.push("actionables must be an array of at most 12");
     else v.actionables.forEach((a, i) => {
       const w = "actionables[" + i + "]";
       if (!isObj(a)) { errors.push(w + " must be an object"); return; }
       noExtra(["what", "kind", "ref"], a, w + ".");
-      if (typeof a.what !== "string" || a.what.length > 300) errors.push(w + ".what must be a string of at most 300 chars");
+      if (typeof a.what !== "string" || chars(a.what) > 300) errors.push(w + ".what must be a string of at most 300 chars");
       if (!["decision", "fix", "info"].includes(a.kind)) errors.push(w + ".kind must be decision|fix|info");
       if (typeof a.ref !== "string") errors.push(w + ".ref must be a string");
     });
@@ -104,8 +111,6 @@ function check(kind, file) {
     req(["fixed", "escalated", "skipped"]);
     strArr("fixed");
     for (const k of ["escalated", "skipped"]) objArr(k, ["title", "why"]);
-  } else {
-    return ["unknown kind " + JSON.stringify(kind) + " (step-verdict|review-verdict|envelope|fix-report)"];
   }
   return errors;
 }

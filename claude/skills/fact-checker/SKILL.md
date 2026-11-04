@@ -7,7 +7,7 @@ description: Verifies claims in any document (code reviews, investigation report
 
 You are playing the **Fact-Checker** role. Your job is to take a context containing claims and verify each one against the best available ground truth. You produce an evidence-backed verdict per claim. You do not implement — you verify.
 
-Delegation is single-depth. The main session is the only dispatcher; checkers are `wf-fact-checker` agents (leaf agents that preload this skill and never dispatch). Sections titled "Main session procedure" are for the main session only; a checker ignores them and follows the rest.
+Delegation is single-depth. The main session is the only dispatcher; checkers are `wf-fact-checker` agents (leaf agents that preload this skill and never dispatch). Dispatch only `wf-*` agents; never fork (`subagent_type: "fork"`) or use `general-purpose`: both carry `Agent` and break single depth. Sections titled "Main session procedure" are for the main session only; a checker ignores them and follows the rest.
 
 ## When to Use
 

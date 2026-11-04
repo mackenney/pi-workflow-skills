@@ -33,6 +33,10 @@ Single-depth delegation: the main session that runs a skill is the only dispatch
 `claude/agents/` lists the `Agent` tool, so subagents cannot spawn subagents (Claude Code allows
 nesting by default). Every pi flow with sub-sub-agents is flattened into main-session stages. The
 skills use only these agents, never the built-in `general-purpose`, whose tools include `Agent`.
+Every dispatching skill states this rule, but it is prose only: fork mode (on by default in recent
+Claude Code) lets the model start a fork on its own, and a fork inherits `Agent`. Optional
+enforcement: add `"Agent(fork)"` to `permissions.deny` in `~/.claude/settings.json` (or the
+project's `.claude/settings.json`). The installer does not touch settings.
 
 The Claude Code `Workflow` tool is not used: it needs per-run opt-in and the user asked for native
 single-depth `Agent` dispatch.
@@ -91,9 +95,10 @@ fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClau
   (schema check, the `outputSchema` stand-in; also rejects a PASS that contradicts its own gates,
   findings or ledger gaps) and `claude/scripts/gates.sh <abs step.md> <commit> <sidecar-sha256> [repo]`
   (runs a sidecar's runnable gates through `scripts/run-gates.sh`, the `acceptance.verify` stand-in;
-  fails closed when the sidecar changed since its hash was recorded or has no runnable gate). Both
-  print one JSON object and exit 0. Run `gates.sh` with Bash `timeout: 600000` (or in the
-  background) and wait for its output; see the `executor` skill.
+  fails closed when the sidecar changed since its hash was recorded, has no runnable gate, or the
+  repo is dirty outside the plan dir). Both print one JSON object and exit 0, also when `node` is
+  missing. Run `gates.sh` with Bash `timeout: 600000` (or in the background) and wait for its
+  output; see the `executor` skill.
 - **Questions.** Only the main session talks to the user (`AskUserQuestion` is not available to
   subagents).
 

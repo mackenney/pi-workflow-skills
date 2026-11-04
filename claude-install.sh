@@ -65,6 +65,8 @@ install_link() {
   elif [[ -n "$legacy" ]] && points_to "$link" "$legacy"; then
     ln -sfn "$src" "$link"
     echo "migrated  $link -> $src  (was the pi original)"
+  elif [[ -L "$link" && ! -e "$link" ]]; then
+    echo "conflict  $link  (dangling symlink to $(readlink "$link") — skipping; if it is from a moved checkout, rm '$link' and re-run)"
   elif [[ -e "$link" || -L "$link" ]]; then
     echo "conflict  $link  (exists but points elsewhere — skipping)"
   else
@@ -84,7 +86,12 @@ uninstall_link() {
         return
       fi
     done
-    echo "skipped   $link  (exists but is not a symlink to this repo)"
+    if [[ ! -e "$link" ]]; then
+      # A dangling link cannot be proven ours (its checkout may be moved or just unmounted): leave it, say how to remove it.
+      echo "skipped   $link  (dangling symlink to $(readlink "$link"); if it is from a moved checkout, rm '$link')"
+    else
+      echo "skipped   $link  (symlink to another location, not this repo)"
+    fi
   elif [[ -e "$link" ]]; then
     echo "skipped   $link  (exists but is not a symlink to this repo)"
   else

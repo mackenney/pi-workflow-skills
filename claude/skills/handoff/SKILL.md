@@ -127,7 +127,7 @@ miss (uncommitted changes, a reversed direction, a hard blocker). Point to the f
 everything else — don't duplicate the file's content here.>
 ```
 
-If it's a direct `Agent` dispatch (a `wf-*` agent; single depth, only the main session dispatches) instead of a human paste, skip the
+If it's a direct `Agent` dispatch (a `wf-*` agent, never a fork or `general-purpose`; single depth, only the main session dispatches) instead of a human paste, skip the
 standalone message — just point the dispatch task at the file path plus the one-line
 objective.
 

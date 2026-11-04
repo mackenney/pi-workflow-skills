@@ -501,7 +501,7 @@ Before the final report or a blocker escalation, confirm:
 
 ## Stage mode (coordinator)
 
-The coordinator runs e2e as a single-agent stage. Single depth: only the main session dispatches.
+The coordinator runs e2e as a single-agent stage. Single depth: only the main session dispatches. Dispatch only `wf-*` agents; never fork (`subagent_type: "fork"`) or use `general-purpose`: both carry `Agent` and break single depth.
 
 1. Main session calls `Agent` with `subagent_type: "wf-worker"`. `wf-worker` does not preload this skill, so the task gives the absolute path of this file (`"${CLAUDE_SKILL_DIR}/SKILL.md"` resolved by the main session) to read first, plus the system under test, SPEC paths, review/fact-check reports, the plans directory, and the detail-file path (default `<stageDir>/e2e.md`). Pass paths, not content. Working directory is the repo (or lane worktree) named in the task.
 2. The child follows Steps 1-8, writes the Final Report to the detail file, and ends its reply with a line `ENVELOPE:` followed by one fenced ```json block, the last content of the reply:

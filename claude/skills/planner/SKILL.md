@@ -11,7 +11,7 @@ dispatch without ambiguity.
 
 This skill is read by two audiences:
 - **The main session** that runs `/planner`: it follows the "Main session procedure" sections and is
-  the only dispatcher.
+  the only dispatcher. Dispatch only `wf-*` agents; never fork (`subagent_type: "fork"`) or use `general-purpose`: both carry `Agent` and break single depth.
 - **`wf-planner` and `wf-synthesizer`**, which preload this skill for its templates (Planner Task
   Anatomy, PROGRESS.md Structure, Step File Anatomy, sizing rules). They ignore the "Main session
   procedure" sections.
