@@ -81,6 +81,7 @@ Decisions recorded here:
 - Added: `wf-worker`, `wf-scout`, `wf-researcher` stand in for pi's builtin `worker`/`delegate`, `scout` and `researcher`. The built-in `general-purpose` agent is never used because its tools include `Agent`.
 - `claude/scripts/check-block.sh` (schema check of extracted verdict/envelope/fix blocks) and `claude/scripts/gates.sh` (sidecar → `run-gates.sh`, fail closed on a sidecar whose sha256 changed since dispatch or a working tree dirty outside the plan dir) partly restore what `outputSchema` and `acceptance.verify` enforced. All `scripts/*` gates work standalone; `tests/scripts.d/claude-scripts.sh` covers `check-block.sh`, `gates.sh` and `claude-install.sh` (`tests/scripts.test.sh`: 292/292 on 2026-11-04).
 - Lane worktrees for waves are created by the main session (`git worktree add -b lane/<step>`), because the Agent tool's `isolation: "worktree"` branches from the default branch, not from the wave base.
+- Non-PASS wave lanes are merged into the working branch before Procedure A resumes them, as in pi's `execute-wave.js:165` (user decision, 2026-11-04). Resuming them in their own lane worktree and merging only after PASS was considered and not adopted.
 - The Claude Code `Workflow` tool (scripted multi-agent orchestration) was not used: it needs per-run opt-in and the user asked for native `Agent` dispatch.
 
 Verified on Claude Code 2.1.317 (2026-11-03), with repo-local `.claude/` symlinks and no change to `~/.claude`:
