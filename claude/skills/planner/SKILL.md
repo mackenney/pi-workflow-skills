@@ -70,6 +70,9 @@ If investigation hasn't happened yet:
 2. Get findings in hand before dispatching planners
 3. Pass verified facts (not assumptions) to planner agents
 
+For a small repo (≤ ~10 relevant files), the main session may gather the verified facts itself
+instead of running `/investigator`, citing file:line.
+
 **What planners need from investigation:**
 - Which files are affected and their current behavior
 - Which APIs, models, or interfaces are involved
@@ -108,7 +111,7 @@ for; default `deep`; `fast` has no Claude Code worker, prefer `standard` or `dee
 `plannerModel` / `synthModel` / `factcheckModel` / `fixModel` (Claude Code aliases only: `haiku`,
 `sonnet`, `opus`, `fable`; passed as the `Agent` call's `model`). Missing `spec` or `planDir`, or an
 unknown `fixScope` → stop with a `blocked` brief. Append "User notes for this stage: <notes>" to every
-child prompt when `notes` is set.
+child prompt, angles included, when `notes` is set.
 
 Before step 1: Spec-First and Investigation-First checks (above). Read the spec's MUST/MUST NOT and
 Open Questions yourself; unresolved Open Questions stop here and go to the user.
@@ -123,7 +126,8 @@ Angle <n> of <N> - propose an independent structural decomposition.
 Write your plan-summary and step files under <planDir>/angle-<n>/ (plan-summary at <planDir>/angle-<n>/plan-summary.md).
 ```
 Wait for a completion notification from every planner before checking files (a check before that
-is not a failure). A planner whose `plan-summary.md` is missing or empty failed. All failed → `FAIL` at `angles`, go to
+is not a failure). Notifications always arrive; do not schedule wakeups, crons or sleep loops while
+waiting (in `-p` a pending wakeup keeps the process alive until it fires). A planner whose `plan-summary.md` is missing or empty failed. All failed → `FAIL` at `angles`, go to
 step 6. Some failed → continue with the rest and record an `info` actionable per failed angle.
 
 **2. Synthesis loop (gate)** — up to `maxSynthRounds` rounds, each a **fresh** `wf-synthesizer`
@@ -149,13 +153,13 @@ validate-plan.sh errors to fix: <errors JSON array, verbatim>
 Rewrite <planDir>/plan.json (and the affected step files/sidecars) to resolve every listed error.
 ```
 After `maxSynthRounds` rounds without `ok` → `FAIL` at `synth` with the last errors. A child that
-ends with `NEEDS-DECISION:` → ask the user, `SendMessage` the answer (load it with ToolSearch
-`select:SendMessage` first if it is deferred), and treat its next reply as the
+ends with `NEEDS-DECISION:` → ask the user, `SendMessage` the answer (if SendMessage is not in your tool list, load it with
+ToolSearch (`select:SendMessage`)), and treat its next reply as the
 same round.
 
 **3. Fact-check (gate).** Dispatch `wf-fact-checker`:
 ```
-Fact-check the plan at <planDir>/plan.json against the repo: verify every gate command exists and is runnable, and every cited fact is real. Write a JSON report to <planDir>/factcheck-0.json: {claims:[{claim, verdict: CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE, evidence}]}.
+Fact-check the plan at <planDir>/plan.json against the repo: verify every gate command exists and is runnable, and every cited fact is real. Write a JSON report to <planDir>/factcheck-0.json: {claims:[{claim, verdict: CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE, evidence}]}. Build at most one throwaway prototype in $(mktemp -d) to run gates fails-before/after; delete it when done.
 ```
 Run `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/classify-factcheck.sh" <planDir>/factcheck-0.json`. Fail closed: `error`
 set or `total` 0 → `FAIL` at `factcheck`, step 6.
@@ -168,10 +172,17 @@ End with the FIX-REPORT: line and json block.
 ```
 Scope text: `all` → "Fix every REFUTED/PARTIAL claim." `clear` → "Fix a REFUTED/PARTIAL claim only
 if its fix is unambiguous (one obviously right correction, no design choice). Record every other one
-as an Open Decision in PROGRESS.md (claim, why it needs the user) instead of fixing it."
+as an Open Decision in PROGRESS.md (claim, why it needs the user) instead of fixing it. When a claim
+is the plan's own constraint (not a spec MUST) and its gate checks less than the claim says,
+narrowing the claim to what the gate checks is the unambiguous fix."
 `trivial` → "Fix only trivial REFUTED/PARTIAL claims: typos, stale paths/names/commands, doc
 drift, one-line mechanical corrections. Record every other one as an Open Decision in PROGRESS.md
-(claim, why it needs the user) instead of fixing it."
+(claim, why it needs the user) instead of fixing it. When a claim is the plan's own constraint (not
+a spec MUST) and its gate checks less than the claim says, narrowing the claim to what the gate
+checks counts as trivial."
+Save the worker's block verbatim (Write tool) to `<stageDir>/fix-report.json` and check it with
+`check-block.sh fix-report`. Not ok → `FAIL` at `plan-fix`. Each `escalated` item must appear in
+PROGRESS.md Open Decisions.
 Then run `validate-plan.sh` yourself: not ok → `FAIL` at `plan-fix`, step 6. Then a second
 fact-check exactly as step 3 ("Re-verify the plan at <planDir>/plan.json after fixes. Same report
 schema.") into `<planDir>/factcheck-1.json`, classified the same way and failing closed the same way.
@@ -184,7 +195,9 @@ when not clean and `fixScope != all`: "<n> refuted/partial claim(s) left by fixS
 
 **6. Persist.** `<stageDir>/result.json` =
 `{state, stage?, planPath, factcheckPath, factcheckClass, validation?, pendingDecisions, angles: [{angle, ok, output}]}`;
-`<stageDir>/brief.json` = stage envelope (`coordinator` skill): `stage: "plan"`; status `failed` if
+`<stageDir>/brief.json` = stage envelope `{stage, status: done|needs-decision|failed|blocked, summary
+(≤400 chars), actionables: [{what (≤300), kind: decision|fix|info, ref}] (≤12), artifacts: {primary,
+details?: [string]}}`, all keys but `details` required, no other keys: `stage: "plan"`; status `failed` if
 not PASS, else `needs-decision` if `pendingDecisions`, else `done`; summary `plan PASS: validate-plan
 ok; fact-check <total> claims, <r> refuted, <p> partial, <d> disputed.` or `plan FAIL at <stage>.`;
 actionables: each pending decision (`decision`), on PASS "check PROGRESS.md Open Decisions before
@@ -339,6 +352,9 @@ In Progress | Blocked | Complete
 ## Open Decisions
 <Any unresolved choices requiring user input — if none, omit>
 
+## Defaults taken (unattended)
+<Choices made without the user, one line each with the gate that pins it — if none, omit>
+
 ## Decisions taken
 <One line per decision, with commit or step reference — appended by scripts/ledger-apply.sh from each step's typed verdict>
 
@@ -436,7 +452,7 @@ Each step file must be self-contained — a worker should be able to read it and
 
 ## Success Gates
 
-Write a `step-NN.gates.json` sidecar next to this file per `step-contract`'s schema — every gate class gets a verdict (`N/A: <reason>` is valid; an omitted class is a planning defect), plus a coverage matrix row for every profile/selector/flag/non-default path this step touches, each naming the gate that exercises it. This is what the executor runs (`gates.sh`) and the reviewer re-runs; the human-readable summary below must not disagree with the sidecar.
+Write a `step-NN.gates.json` sidecar next to this file per `step-contract`'s schema — every gate class gets a verdict (`N/A: <reason>` is valid; an omitted class is a planning defect), plus a coverage matrix row for every profile/selector/flag/non-default path this step touches, each naming the gate that exercises it. This is what the executor runs (`gates.sh`) and the reviewer re-runs; the human-readable summary below must not disagree with the sidecar. Gate outputs and by-products (caches, coverage files, build dirs) must be gitignored: the executor's clean-tree check treats any untracked non-ignored file as dirty.
 
 - [ ] G-build: `<exact command>` exits 0
 - [ ] G-static: `<exact command>` exits 0

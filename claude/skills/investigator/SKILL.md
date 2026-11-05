@@ -50,7 +50,7 @@ For each distinct subsystem or angle, one scout. Typical count:
 
 Dispatch:
 1. Pick an output directory (the stage directory if one is given, else a scratch directory) and one findings path per scout, e.g. `<dir>/scout-1.md`.
-2. Write each scout task per "Scout Task Anatomy" below. The task is the only context a scout gets: there is no fork context in Claude Code. If you did significant preparation (deep exploration, prior findings) that every scout needs, write it to a file and put that file's absolute path in each task ("Read <path> first"); do not paste it inline.
+2. Write each scout task per "Scout Task Anatomy" below. Scouts are dispatched as wf-scout, not forks, so the task is the only context a scout gets. If you did significant preparation (deep exploration, prior findings) that every scout needs, write it to a file and put that file's absolute path in each task ("Read <path> first"); do not paste it inline.
 3. Issue all scouts as several `Agent` calls in one message, `subagent_type: "wf-scout"`, no model override (the agent file binds the model).
 4. When they return, check that every findings file exists and is non-empty (`test -s`). A missing file means that scout failed: re-dispatch that one scout once with the same task; if it fails again, record the angle as a gap.
 
@@ -85,7 +85,7 @@ Read all scout output files. Do not expect scout findings in their replies — s
 When the `coordinator` skill (or the user) calls this skill for the investigate stage, it names a `<stageDir>` and a task. Procedure:
 
 1. Orient (Step 1), then split the task into N angles (N ≤ 5).
-2. Dispatch N `wf-scout` in parallel (one message). Each writes `<stageDir>/scout-N.md`. Wait for a completion notification from every scout, then check each file exists and is non-empty; re-dispatch a missing one once; drop it as a gap if it fails again.
+2. Dispatch N `wf-scout` in parallel (one message). Each writes `<stageDir>/scout-N.md`. Wait for a completion notification from every scout, then check each file exists and is non-empty; re-dispatch a missing one once; drop it as a gap if it fails again. Notifications always arrive; do not schedule wakeups, crons or sleep loops while waiting (in `-p` a pending wakeup keeps the process alive until it fires).
 3. Dispatch one `wf-worker` (single `Agent` call) to merge. Its prompt contains: the task, "Read <absolute path of this skill file, `${CLAUDE_SKILL_DIR}/SKILL.md` resolved by the main session>, section Synthesis Output Formats, first" (`wf-worker` does not preload this skill), the absolute paths of the surviving `scout-N.md` files, the instruction to write the consolidated report (contradictions flagged, gaps explicit, Synthesis Output Format matching the task) to `<stageDir>/findings.md`, and the instruction to end its reply with an `ENVELOPE:` line followed by one fenced ```json block:
    ```json
    {"stage": "investigate", "status": "done|needs-decision|failed|blocked",

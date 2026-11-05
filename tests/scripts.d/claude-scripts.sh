@@ -80,7 +80,8 @@ check "cb: findings item a string" '.ok == false and any(.errors[]; test("findin
 check "cb: escalated item a string" '.ok == false and any(.errors[]; test("escalated\\[0\\] must be an object"))' "$(cb fix-report '{"fixed":[],"escalated":["x"],"skipped":[]}')"
 check "cb: actionables item null" '.ok == false and any(.errors[]; test("actionables\\[0\\] must be an object"))' "$(cb envelope "$(ev '.actionables=[null]')")"
 
-# gates.sh
+# gates.sh (hermetic: the user's git config must not change what counts as clean)
+OLD_GCG="${GIT_CONFIG_GLOBAL-}"; export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 GR="$T/gr"; mkdir -p "$GR/repo" "$GR/plan"
 gg() { git -C "$GR/repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 gg init -q -b main; echo a > "$GR/repo/a"; gg add a; gg commit -qm base; GC1="$(gg rev-parse HEAD)"
@@ -91,7 +92,6 @@ gs() { (cd "$GR/repo" && "$CS/gates.sh" "$@" 2>/dev/null) || echo '{"rc":"nonzer
 H="$(side '{"gates":[{"id":"a","class":"unit","cmd":"test -f b"},{"id":"n","class":"integ","result":"n/a","reason":"r"},{"id":"d","class":"e2e-smoke","cmd":"false","result":"deferred","owed_by":"s9"}]}')"
 check "gates: n/a + deferred filtered" '.ok == true and (.results | length) == 1 and .results[0].id == "a" and .skipped == ["n","d"]' "$(gs "$STEP" "$GC2" "$H")"
 check "gates: repo arg from another cwd" '.ok == true' "$(cd "$T" && "$CS/gates.sh" "$STEP" "$GC2" "$H" "$GR/repo")"
-check "gates: HEAD mismatch" '.ok == false and (.error | test("check the commit out"))' "$(gs "$STEP" "$GC1" "$H")"
 check "gates: failing gate" '.ok == false and .results[0].pass == false' "$(gs "$STEP" "$GC2" "$(side '{"gates":[{"id":"a","class":"unit","cmd":"exit 3"}]}')")"
 check "gates: timeout" '.ok == false and .results[0].timedOut == true' "$(gs "$STEP" "$GC2" "$(side '{"gates":[{"id":"a","class":"unit","cmd":"sleep 5","timeoutMs":200}]}')")"
 H="$(side '{"gates":[{"id":"n","class":"integ","result":"n/a","reason":"r"},{"id":"d","class":"unit","cmd":"true","result":"deferred","owed_by":"s9"}]}')"
@@ -110,20 +110,77 @@ check "gates: sidecar null" '.ok == false and (.error | test("no gates array"))'
 check "gates: null gate skipped" '.ok == true and .skipped == [null]' "$(gs "$STEP" "$GC2" "$(side '{"gates":[null,{"id":"a","class":"unit","cmd":"true"}]}')")"
 check "gates: only a null gate" '.ok == false and (.error | test("no runnable"))' "$(gs "$STEP" "$GC2" "$(side '{"gates":[null]}')")"
 check "gates: bad JSON" '.ok == false and (.error | test("unreadable"))' "$(gs "$STEP" "$GC2" "$(side '{nope')")"
-# gates.sh: the tree must be clean outside the plan dir (run-gates checks only HEAD)
+# gates.sh: the tree must be clean outside the plan dir (run-gates checks only HEAD).
+
 H="$(side '{"gates":[{"id":"a","class":"unit","cmd":"test -f u"}]}')"
 touch "$GR/repo/u"
 check "gates: untracked file outside the plan dir" '.ok == false and (.error | test("not clean")) and (.error | test("\\?\\? u"))' "$(gs "$STEP" "$GC2" "$H")"
-rm "$GR/repo/u"
+gg config status.showUntrackedFiles no
+check "gates: untracked file seen under showUntrackedFiles=no" '.ok == false and (.error | test("\\?\\? u"))' "$(gs "$STEP" "$GC2" "$H")"
+gg config --unset status.showUntrackedFiles; rm "$GR/repo/u"
 check "gates: clean tree, gate sees no stray file" '.ok == false and .results[0].pass == false' "$(gs "$STEP" "$GC2" "$H")"
+check "gates: HEAD mismatch says never detach" '.ok == false and (.error | test("move the branch there"))' "$(gs "$STEP" "$GC1" "$H")"
+echo a2 > "$GR/repo/a"
+check "gates: modified tracked file" '.ok == false and (.error | test(" M a"))' "$(gs "$STEP" "$GC2" "$H")"
+gg add a
+check "gates: staged-only change" '.ok == false and (.error | test("M  a"))' "$(gs "$STEP" "$GC2" "$H")"
+gg reset -q a; gg checkout -q -- a
 check "gates: git failure is not clean" '.ok == false and (.error | test("git rev-parse failed"))' "$("$CS/gates.sh" "$STEP" "$GC2" "$H" "$GR/plan")"
-mkdir -p "$GR/repo/plans/foo" "$GR/repo/plans/bar" "$GR/repo/docs/p"; echo x > "$GR/repo/plans/bar/PROGRESS.md"
-cp "$STEP" "$GR/repo/plans/foo/step-01-x.md"; printf '%s' '{"gates":[{"id":"a","class":"unit","cmd":"true"}]}' > "$GR/repo/plans/foo/step-01-x.gates.json"
-PH="$(sha256sum "$GR/repo/plans/foo/step-01-x.gates.json" | cut -d' ' -f1)"
+mkdir -p "$T/nodeonly"; ln -sf "$(command -v node)" "$T/nodeonly/node"
+check "gates: git missing gives a reason" '.ok == false and (.error | test("ENOENT"))' "$(cd "$GR/repo" && PATH="$T/nodeonly" "$T/nodeonly/node" "$CS/gates.mjs" "$STEP" "$GC2" "$H")"
+check "gates: coreutils missing keeps one JSON line" '.ok == false and (.error | test("readlink"))' "$(PATH="$T/nodeonly" /bin/bash "$CS/gates.sh" "$STEP" "$GC2" "$H")"
+check "cb: coreutils missing keeps one JSON line" '.ok == false and any(.errors[]; test("readlink"))' "$(PATH="$T/nodeonly" /bin/bash "$CS/check-block.sh" step-verdict "$CB/b.json")"
+# Plan dirs inside the repo: the plan dir and an all-untracked parent (sibling plan dirs) are excluded.
+pl() { mkdir -p "$GR/repo/$1"; cp "$STEP" "$GR/repo/$1/step-01-x.md"; printf '%s' '{"gates":[{"id":"a","class":"unit","cmd":"true"}]}' > "$GR/repo/$1/step-01-x.gates.json"; }
+PH="$(printf '%s' '{"gates":[{"id":"a","class":"unit","cmd":"true"}]}' | sha256sum | cut -d' ' -f1)"
+pl plans/foo; mkdir -p "$GR/repo/plans/bar"; echo x > "$GR/repo/plans/bar/PROGRESS.md"
 check "gates: untracked plans/<name> with a sibling plan dir is clean" '.ok == true' "$(gs "$GR/repo/plans/foo/step-01-x.md" "$GC2" "$PH")"
-cp "$GR/repo/plans/foo/step-01-x."* "$GR/repo/docs/p/"
-check "gates: plan dir outside plans/ is excluded exactly" '.ok == false and (.error | test("plans/"))' "$(gs "$GR/repo/docs/p/step-01-x.md" "$GC2" "$PH")"
+pl docs/p
+check "gates: other plan roots are not excluded" '.ok == false and (.error | test("plans/bar/PROGRESS.md"))' "$(gs "$GR/repo/docs/p/step-01-x.md" "$GC2" "$PH")"
 rm -rf "$GR/repo/plans" "$GR/repo/docs"
+pl .agent-plans/foo; mkdir -p "$GR/repo/.agent-plans/bar"; echo x > "$GR/repo/.agent-plans/bar/PROGRESS.md"
+check "gates: .agent-plans sibling is clean" '.ok == true' "$(gs "$GR/repo/.agent-plans/foo/step-01-x.md" "$GC2" "$PH")"
+rm -rf "$GR/repo/.agent-plans"
+pl x/y/plans/foo; mkdir -p "$GR/repo/x/y/plans/bar"; echo x > "$GR/repo/x/y/plans/bar/p.md"
+check "gates: nested plans root sibling is clean" '.ok == true' "$(gs "$GR/repo/x/y/plans/foo/step-01-x.md" "$GC2" "$PH")"
+rm -rf "$GR/repo/x"
+mkdir -p "$GR/repo/src"; echo t > "$GR/repo/src/t"; gg add src/t; gg commit -qm src; GC3="$(gg rev-parse HEAD)"
+pl src/plan; echo x > "$GR/repo/src/conftest.py"
+check "gates: tracked parent of the plan dir is not excluded" '.ok == false and (.error | test("src/conftest.py"))' "$(gs "$GR/repo/src/plan/step-01-x.md" "$GC3" "$PH")"
+rm -rf "$GR/repo/src/plan" "$GR/repo/src/conftest.py"
+check "gates: plan dir at the repo root is rejected" '.ok == false and (.error | test("repo root"))' "$("$CS/gates.sh" --clean "$GR/repo" "$GR/repo")"
+# --clean, --stage, --wtdir
+GP="$GR/plan"
+check "gates --clean: clean" '.ok == true and .paths == []' "$("$CS/gates.sh" --clean "$GP" "$GR/repo")"
+check "gates --clean: relative plan dir" '.ok == false and (.error | test("absolute"))' "$("$CS/gates.sh" --clean plan "$GR/repo")"
+check "gates --clean: relative --stage" '.ok == false and (.error | test("--stage must be an absolute"))' "$("$CS/gates.sh" --clean "$GP" "$GR/repo" --stage .stage)"
+mkdir -p "$GR/repo/.stage/run-1"; echo '{}' > "$GR/repo/.stage/run-1/brief.json"
+check "gates --clean: stage dir outside the plan dir is dirty" '.ok == false and (.paths | index("?? .stage/run-1/brief.json"))' "$("$CS/gates.sh" --clean "$GP" "$GR/repo")"
+check "gates --clean: --stage excludes it" '.ok == true' "$("$CS/gates.sh" --clean "$GP" "$GR/repo" --stage "$GR/repo/.stage")"
+check "gates: --stage on a gate run" '.ok == false and .results[0].pass == false' "$(gs "$STEP" "$GC3" "$H" --stage "$GR/repo/.stage")"
+rm -rf "$GR/repo/.stage"
+gg worktree add -q -b lane/x "$GR/repo/.wt/lane-x" "$GC3"
+check "gates --clean: unignored lane worktree without --wtdir is dirty" '.ok == false and (.paths | index("?? .wt/lane-x/"))' "$("$CS/gates.sh" --clean "$GP" "$GR/repo")"
+check "gates --clean: --wtdir excludes registered lanes" '.ok == true' "$("$CS/gates.sh" --clean "$GP" "$GR/repo" --wtdir "$GR/repo/.wt")"
+echo s > "$GR/repo/.wt/stray"
+check "gates --clean: stray file in wtdir still dirty" '.ok == false and .paths == ["?? .wt/stray"]' "$("$CS/gates.sh" --clean "$GP" "$GR/repo" --wtdir "$GR/repo/.wt")"
+rm "$GR/repo/.wt/stray"
+gg worktree add -q -b lane/h "$GR/repo/src/hidden" "$GC3"
+check "gates --clean: worktree outside --wtdir still dirty" '.ok == false and (.paths | index("?? src/hidden/"))' "$("$CS/gates.sh" --clean "$GP" "$GR/repo" --wtdir "$GR/repo/.wt")"
+gg worktree remove --force "$GR/repo/src/hidden"
+echo l > "$GR/repo/.wt/lane-x/dirt"
+check "gates --clean: lane checked as its own repo" '.ok == false and .paths == ["?? dirt"]' "$("$CS/gates.sh" --clean "$GP" "$GR/repo/.wt/lane-x" --wtdir "$GR/repo/.wt")"
+gg worktree remove --force "$GR/repo/.wt/lane-x"; gg branch -qD lane/x lane/h; rmdir "$GR/repo/.wt"
+mkdir -p "$GR/repo/pkg/__pycache__"; echo c > "$GR/repo/pkg/__pycache__/m.pyc"
+check "gates: by-product hint" '.ok == false and (.hint | test("gitignore them: \\?\\? pkg/__pycache__/m.pyc"))' "$(gs "$STEP" "$GC3" "$H")"
+rm -rf "$GR/repo/pkg"
+# A submodule's dirt counts even when the user's config ignores submodules.
+SM="$T/gr-sub"; git init -q -b main "$SM"; echo s > "$SM/s"; git -C "$SM" add s; git -C "$SM" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm s
+gg -c protocol.file.allow=always submodule --quiet add "$SM" sub; gg commit -qm sub; GC4="$(gg rev-parse HEAD)"
+echo dirt > "$GR/repo/sub/s"; gg config diff.ignoreSubmodules all
+check "gates --clean: dirty submodule under diff.ignoreSubmodules=all" '.ok == false and (.paths | index(" M sub"))' "$("$CS/gates.sh" --clean "$GP" "$GR/repo")"
+gg config --unset diff.ignoreSubmodules
+if [ -n "$OLD_GCG" ]; then export GIT_CONFIG_GLOBAL="$OLD_GCG"; else unset GIT_CONFIG_GLOBAL; fi; unset GIT_CONFIG_NOSYSTEM
 
 # claude-install.sh (always --dir into the temp dir, never ~/.claude)
 CI="$T/ci"; mkdir -p "$CI/real"

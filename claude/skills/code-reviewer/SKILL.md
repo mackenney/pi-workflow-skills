@@ -75,7 +75,9 @@ This overrides any relative range in Target."
 instructions first; default `SPEC.md` at the component root). If found, read it and pass every
 reviewer the MUST / MUST NOT statements: "These are hard requirements from the component spec. Each
 one is pass/fail, not heuristic. Check compliance explicitly: [list]". A MUST violation is a
-blocker by definition; synthesis never downgrades it.
+blocker by definition; synthesis never downgrades it. If a finding depends on interpreting a MUST
+term, synthesis states the reading. When all angles agree on that reading, it is a MUST violation
+(blocker). When they disagree, it is `important` with a `decision` note.
 
 Present the context summary before dispatching:
 
@@ -107,14 +109,16 @@ Write your findings (markdown, every finding with file:line + evidence + severit
 [User notes for this stage: <notes>]
 ```
 Last angle gets `model: <diversityModel>` when set. Record each agent id. Wait for a completion
-notification from every angle before checking files (a check before that is not a failure). An
+notification from every angle before checking files (a check before that is not a failure).
+Notifications always arrive; do not schedule wakeups, crons or sleep loops while waiting (in `-p` a
+pending wakeup keeps the process alive until it fires). An
 angle whose file is missing or empty failed: retry each failed angle once (fresh, output `<dir>/angle-<i>-retry.md`).
 Still missing → the round **fails** at `angles` (a missing angle is a missing perspective; never
 synthesize the survivors into a PASS). Standalone with no loop: fall back to a single-agent review
 and say so.
 
-**R2. Cross-exam (parallel, default on).** Load `SendMessage` with ToolSearch (`select:SendMessage`)
-if it is deferred. For every angle, in one message, `SendMessage` to that angle's agent id (it
+**R2. Cross-exam (parallel, default on).** If SendMessage is not in your tool list, load it with
+ToolSearch (`select:SendMessage`). For every angle, in one message, `SendMessage` to that angle's agent id (it
 resumes with its own review context, never another reviewer's):
 ```
 mode: "cross-exam"
@@ -154,7 +158,7 @@ Target: <target> [Repo] [Review range]
 <scope text>
 [Only when R4 ran this round:] Skip any finding the fact-check at <dir>/factcheck.json marks REFUTED; for DISPUTED/UNVERIFIABLE ones, fix only if you can confirm the defect yourself.
 [Without R4:] No fact-check ran: fix a finding only after confirming the defect yourself; skip it otherwise.
-Re-run the repo's relevant tests/lint after fixing and, if you changed anything, commit with an imperative message.
+Re-run the repo's relevant tests/lint after fixing and, if you changed anything, commit with an imperative message. Use the attribution trailer from your own system reminder, never one copied from the dispatcher.
 End with the FIX-REPORT: line and json block: fixed (titles), escalated ({title, why}: needs the user), skipped ({title, why}: refuted/unconfirmed/out of scope nits).
 ```
 Scope text — `all`: "Fix every blocker and important finding in <dir>/synthesis.json." `clear`: "Fix
@@ -165,22 +169,28 @@ the finding, or you disagree with it." `trivial`: "Fix only trivial items in <di
 (blockers, important and nits alike): typos, stale paths/names, doc or comment drift, one-line
 mechanical corrections with no behaviour change. Escalate every other blocker/important finding;
 leave other nits alone."
-Save the block to `<dir>/fix-report.json`; `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; "$WFS/claude/scripts/check-block.sh" fix-report <dir>/fix-report.json` not ok
-→ `FAIL` at `fix`, stop. Any `escalated` → state `NEEDS_DECISION`, stop. Last round → state
+Copy the block verbatim with the Write tool to `<dir>/fix-report.json` (no retyping; correct
+nothing, put corrections in result.json); `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; "$WFS/claude/scripts/check-block.sh" fix-report <dir>/fix-report.json` not ok
+→ `FAIL` at `fix`, stop. Any `escalated` → if the fix also changed code and rounds remain, run the next round with
+the escalated titles in the prior-round line as "escalated, do not re-raise"; state `NEEDS_DECISION`
+after that round. Otherwise `NEEDS_DECISION`, stop. Last round → state
 `FIXED_UNREVIEWED` (fixes made but not re-reviewed), stop. Otherwise next round.
 
 **R6. Persist.** `<reviewDir>/result.json` = `{state, stage?, round, rounds: [{round, synthPath,
 fcPath?, reviewClass, fcClass?, fix?}], pendingDecisions}` where pendingDecisions = "disputed review
 claims - see <fcPath>" if the last fact-check has `disputed > 0`, each escalated finding, and for
 `REPORTED` "unfixed (fixScope none): <b> blocker(s), <i> important - see <synthPath>".
-`<reviewDir>/brief.json` (`coordinator` envelope): `stage: "review"`; status `needs-decision` when
+`<reviewDir>/brief.json` (`coordinator` envelope `{stage, status: done|needs-decision|failed|blocked,
+summary (≤400 chars), actionables: [{what (≤300), kind: decision|fix|info, ref}] (≤12), artifacts:
+{primary, details?: [string]}}`, all keys but `details` required, no other keys): `stage: "review"`; status `needs-decision` when
 pendingDecisions is non-empty, else `done` for `PASS`/`FIXED_UNREVIEWED`/`NEEDS_DECISION`/`REPORTED`,
 `blocked` for infrastructure, otherwise `failed`; summary `review <STATE> after <n> round(s); last
 synthesis: <b> blockers, <i> important.`; actionables (max 12): one `decision` per pendingDecisions
 entry; a `fix` "<stage>: <reason>" for any state other than `PASS`/`NEEDS_DECISION`/`REPORTED`/
 `FIXED_UNREVIEWED`; for `FIXED_UNREVIEWED` the `info` "last round's fixes were not re-reviewed; add a
-round to verify them"; `artifacts.primary` = last `synthesis.json`. Check it with
-`check-block.sh envelope`.
+round to verify them", and the same `info` for `NEEDS_DECISION` with a fix commit not re-reviewed;
+`artifacts.primary` = last `synthesis.json`. Check it with
+`WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; "$WFS/claude/scripts/check-block.sh" envelope <reviewDir>/brief.json`.
 
 ## Main session procedure — report and follow-up
 

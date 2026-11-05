@@ -54,7 +54,7 @@ for a trivial single-file change in 1–2 tool calls (typo, stale path, comment)
 **Single depth.** Dispatch only `wf-*` agents. Never fork (`subagent_type: "fork"`) and never use
 `general-purpose` during a procedure: both carry the `Agent` tool and could dispatch agents of their
 own. After a parallel dispatch, wait for a completion notification from every agent before any file
-or gate check; a check before that is not a failure.
+or gate check; a check before that is not a failure. Notifications always arrive; do not schedule wakeups, crons or sleep loops while waiting (in `-p` a pending wakeup keeps the process alive until it fires).
 
 **Pass paths, never content.** A stage's inputs are earlier stages' `artifacts` paths plus allowed
 overrides. Never paste a report, plan or diff into a prompt.
@@ -109,7 +109,7 @@ For `fix`, `custom`, and the stages whose skill points here:
 | **fact-check-doc** | fact-checker (after anything that is not plan/review) | `fact-checker` → Stage mode (`wf-fact-checker` → `factcheck.json`, classified by `classify-factcheck.sh`) | document path; args `{stage: "fact-check-doc", agent: "wf-fact-checker", detailFile: "factcheck.json"}` | `model`, `notes` |
 | **fix** | fix (after fact-check-doc) | Single-agent stage procedure, `wf-worker`, task: fix REFUTED/PARTIAL items in the checked document only; skip DISPUTED/UNVERIFIABLE unless confirmed; "Do not emit a FIX-REPORT block; end with ENVELOPE: only." | document + fact-check paths; args `{stage: "fix", agent: "wf-worker", detailFile: "fix-notes.md"}` | `model`, `notes` (scope words like "only typos" go in the task and in `notes`) |
 | **plan** | planner, plan it, `planner -> fact-checker -> fix` | `planner` → "plan, fact-check, fix" (fact-check and fix built in) | `spec`, `planDir` | `angles` (2–4, default 3), `mode: "simple"`, `tier` (executor tier the steps are sized for), `plannerModel`, `synthModel`, `factcheckModel`, `fixModel`, `fixScope`, `notes` |
-| **execute** | executor, implement, run the plan | `executor` → Procedure A (one step) or B (wave) per wave, then **done-check** | `planDir`, `stepFile(s)` (absolute: resolve PROGRESS.md's `./step-NN-*.md` links first) | `tier`, `pr`, `notes`, `resume` (Procedure A only: copy `resumePoint.args`, which include `sidecarSha`, from the stopped step's `result.json`; add `guidance` for `fix`) |
+| **execute** | executor, implement, run the plan | `executor` → Procedure A (one step) or B (wave) per wave, then **done-check** | `planDir`, `stepFile(s)` (absolute: resolve PROGRESS.md's `./step-NN-*.md` links first) | `tier`, `pr`, `notes`, `wtdir` (Procedure B only: absolute lane worktree dir, passed through to the executor), `resume` (Procedure A only: copy `resumePoint.args`, which include `sidecarSha`, from the stopped step's `result.json`; add `guidance` for `fix`) |
 | **review** | code-reviewer, `(code-reviewer -> fact-checker -> fix) xN` | `code-reviewer` → "review rounds" (fact-check and fix built in; stops at the first clean round) | `repo`, `baseRef` (start of the change), `target` (one line), `reviewDir` = `<stageDir>` | `maxRounds` = N (default 2), `crossExam` (default true; false for "no x-check"), `diversityModel` ("with sonnet"; see Models), `reviewerModel`, `factcheckModel`, `fixModel`, `fixScope`, `notes` |
 | **e2e** | e2e-tester, test it end to end | `e2e-tester` → Stage mode (`wf-worker`) | spec/plan paths, how to reach the running stack; args `{stage: "e2e", agent: "wf-worker", skill: "e2e-tester", detailFile: "e2e-report.md"}` | `model`, `notes` |
 | **done-check** | is it done, (end of execute) | `executor` → Procedure D (`terminal-gate.sh`) | `planDir` | `pr` (CI bound to HEAD of `repo`; `expectSha` overrides) |
@@ -228,7 +228,7 @@ done-check result.
   to continue on defaults; the planner procedure records disputed claims through `ledger-apply`.
 - **review**: a `failed` review with findings left after N rounds is reported, not looped further.
 - A child that ends with `NEEDS-DECISION:` → ask the user (quote the block), then `SendMessage` the
-  answer to that agent (load it first with ToolSearch `select:SendMessage` if it is deferred) and continue the procedure with its next reply.
+  answer to that agent (if SendMessage is not in your tool list, load it with ToolSearch (`select:SendMessage`)) and continue the procedure with its next reply.
 - Any infrastructure failure (agent launch error, unknown agent, tool error) is a `blocked` stage:
   report the exact error; never switch to doing the stage yourself.
 

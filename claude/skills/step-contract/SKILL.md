@@ -131,6 +131,12 @@ markdown step file is what humans read. `validate-plan.sh` cross-checks the two 
 
 A sidecar may pre-set only `"result": "n/a"` (with `reason`) or `"result": "deferred"` (with `owed_by`, the step that runs the real gate, plus an `open` row in "Tech debt / deferred gates" naming the gate id). Workers and reviewers never edit the step file, the sidecar, plan.json or PROGRESS.md: a gate that cannot pass with a correct implementation is reported (FAIL + `pending_decisions`), not rewritten. Every other `gates[]` entry with a `cmd` is run by the orchestrator on the worker's commit and again by the reviewer; the worker's own claims are evidence, not verdict. `timeoutMs` defaults to 900000 when omitted; real builds must set it explicitly higher.
 
+Each `cmd` runs as `bash -c "<cmd>"` with cwd = repo root, no TTY, stdout and stderr captured; exit 0
+= pass. Avoid `rm` in `cmd`: subagent safety checks can deny a `bash -c` script containing `rm`, even
+under `bypassPermissions`. Gate outputs and by-products (caches, coverage files, build dirs) must be
+gitignored: the executor's clean-tree check treats any untracked non-ignored file as dirty, and
+ignored files are never checked.
+
 ## STEP-VERDICT (worker final block)
 
 The last content of a worker's reply is a `STEP-VERDICT:` line followed by this object in a fenced
@@ -181,8 +187,8 @@ Same placement rule: a `REVIEW-VERDICT:` line followed by a fenced ` ```gate-rep
 An agent that hits a product, architecture or scope decision its task did not approve stops and
 ends its reply with a `NEEDS-DECISION:` line followed by a fenced block: the decision, the options,
 its recommendation, and the commit holding any work so far. It does not guess and does not end with
-a bare question. The orchestrator asks the human and resumes the agent (`SendMessage`, loaded with
-ToolSearch first if deferred) or re-dispatches it with the answer.
+a bare question. The orchestrator asks the human and resumes the agent (`SendMessage`; if it is not in the tool list, load it
+with ToolSearch (`select:SendMessage`)) or re-dispatches it with the answer.
 
 ## Resuming a stopped step
 
@@ -194,7 +200,8 @@ then review), `review` (review `commit`), `fix` (continue the worker with the hu
 is still in this session, else a fresh worker from `commit` — then review), `ci` (CI read bound to
 `commit`, then ledger), `ledger` (apply the ledger from the prior `result.json` only). Every
 non-PASS step result records `resumePoint: {from, commit, workerAgentId, args}` in its `result.json`,
-with the resolved base in `args.baseCommit`.
+with the resolved base in `args.baseCommit` and the sidecar hash recorded at first dispatch in
+`args.sidecarSha`; a resume without it, or with a sidecar whose hash differs, is blocked.
 
 ## PROGRESS.md ledger — sections and row grammar
 
