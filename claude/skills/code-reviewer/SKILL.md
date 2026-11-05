@@ -122,12 +122,12 @@ ToolSearch (`select:SendMessage`). For every angle, in one message, `SendMessage
 resumes with its own review context, never another reviewer's):
 ```
 mode: "cross-exam"
-Cross-examine the other reviewers' findings: <paths of the other angle files>.
+Cross-examine the other reviewers' findings: <paths of the other surviving angle files, retry paths where used>.
 For each finding: Confirmed / Disputed (with evidence) / Already flagged / (skim only) variants, per the Reviewer role.
 Write only your cross-exam section to <dir>/angle-<i>-xexam.md.
 ```
 If an agent cannot be resumed, dispatch a fresh `wf-code-reviewer` with the same text plus "Your own
-findings: <dir>/angle-<i>.md". A cross-exam that still fails is dropped (at most one retry); note
+findings: <dir>/angle-<i>.md" (`<dir>/angle-<i>-retry.md` when that angle was retried). A cross-exam that still fails is dropped (at most one retry); note
 the gap for synthesis. Never block the round on it.
 
 **R3. Synthesis (gate).** Fresh `wf-code-reviewer`:
@@ -141,7 +141,10 @@ Write the human-facing review (INLINE_COMMENTS, GENERAL_REVIEW, INTERNAL_NOTES) 
 ```
 Run `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/classify-review.sh" <dir>/synthesis.json`. `error` set → the round fails
 at `synth` (an off-schema report is not "zero findings"). `blockers == 0 && important == 0` → state
-`PASS`, stop (no fact-check needed).
+`PASS`, stop (no fact-check needed), except when `fixScope` is `trivial` or `all` and the synthesis
+has a non-empty `nits` array: then skip R4 (it checks blocker/important claims only, and zero claims
+fail closed) and run R5 as a nits-only pass. After it, the state is `PASS` (nits do not gate, so no
+re-review round), with the fix report recorded in the round.
 
 **R4. Fact-check (gate)** — only when fact-check is part of this run. `wf-fact-checker`:
 ```
@@ -161,7 +164,7 @@ Target: <target> [Repo] [Review range]
 Re-run the repo's relevant tests/lint after fixing and, if you changed anything, commit with an imperative message. Use the attribution trailer from your own system reminder, never one copied from the dispatcher.
 End with the FIX-REPORT: line and json block: fixed (titles), escalated ({title, why}: needs the user), skipped ({title, why}: refuted/unconfirmed/out of scope nits).
 ```
-Scope text — `all`: "Fix every blocker and important finding in <dir>/synthesis.json." `clear`: "Fix
+Scope text — `all`: "Fix every blocker, important finding and nit in <dir>/synthesis.json." `clear`: "Fix
 a blocker/important finding in <dir>/synthesis.json only if its fix is unambiguous: one obviously
 right change, no design choice, no behaviour or contract change beyond the defect. Escalate (do not
 fix) any finding that needs a judgement call: competing fixes, API/behaviour change, scope beyond
@@ -171,10 +174,14 @@ mechanical corrections with no behaviour change. Escalate every other blocker/im
 leave other nits alone."
 Copy the block verbatim with the Write tool to `<dir>/fix-report.json` (no retyping; correct
 nothing, put corrections in result.json); `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; "$WFS/claude/scripts/check-block.sh" fix-report <dir>/fix-report.json` not ok
-→ `FAIL` at `fix`, stop. Any `escalated` → if the fix also changed code and rounds remain, run the next round with
-the escalated titles in the prior-round line as "escalated, do not re-raise"; state `NEEDS_DECISION`
-after that round. Otherwise `NEEDS_DECISION`, stop. Last round → state
-`FIXED_UNREVIEWED` (fixes made but not re-reviewed), stop. Otherwise next round.
+→ `FAIL` at `fix`, stop. Then (nits-only pass: R3):
+
+| `escalated` | code changed | rounds remain | next |
+|---|---|---|---|
+| any | yes | yes | next round, escalated titles in the prior-round line as "escalated, do not re-raise"; the final state is `NEEDS_DECISION` |
+| any | otherwise | | `NEEDS_DECISION`, stop |
+| none | | no | `FIXED_UNREVIEWED` (fixes made but not re-reviewed), stop |
+| none | | yes | next round |
 
 **R6. Persist.** `<reviewDir>/result.json` = `{state, stage?, round, rounds: [{round, synthPath,
 fcPath?, reviewClass, fcClass?, fix?}], pendingDecisions}` where pendingDecisions = "disputed review

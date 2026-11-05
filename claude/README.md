@@ -9,7 +9,8 @@ Install: `./claude-install.sh` (links `claude/skills/*` → `~/.claude/skills/`,
 an older version of the script made to the pi originals. No copy is involved: links point into this
 checkout, so edits apply at once (skills reload live; agents on the next session). For one session
 without touching `~/.claude`, `claude --add-dir <dir>` loads `<dir>/.claude/skills` and
-`<dir>/.claude/agents`, where those are symlinks into `claude/`. `permissions.additionalDirectories`
+`<dir>/.claude/agents`, where those are symlinks into `claude/` (how every live run in
+`PORTABILITY.md` §6 loaded them). `permissions.additionalDirectories`
 grants file access only and loads neither. A plugin would also read in place, but prefixes every
 name (`plugin:wf-worker`), which every `subagent_type` here would have to follow.
 
@@ -92,9 +93,9 @@ fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClau
   `NEEDS-DECISION:`). The main session copies the block verbatim into a file in the stage directory
   with the Write tool and checks it with `claude/scripts/check-block.sh` before using it. A missing or invalid block is a failed
   child, never an implied PASS.
-- **Stage directories.** Every procedure writes `brief.json` (the stage envelope, see the
-  `coordinator` skill) and `result.json` into its stage directory, as the pi workflows did, so runs
-  stay resumable after `/clear`.
+- **Stage directories.** Every stage procedure writes `brief.json` (the stage envelope, see the
+  `coordinator` skill) into its stage directory; procedures that produce state (executor, review,
+  plan) also write `result.json`, as the pi workflows did, so runs stay resumable after `/clear`.
 - **Resuming an agent.** `SendMessage` to a finished agent's id resumes it with its own context
   (fix rounds, cross-exam, answers to `NEEDS-DECISION:`). The resumed agent sees it as a message
   from the coordinator. If it is not in the tool list (deferred in some sessions), load it with
@@ -103,19 +104,24 @@ fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClau
 - **Helpers.** `claude/scripts/check-block.sh <step-verdict|review-verdict|envelope|fix-report> <file>`
   (schema check, the `outputSchema` stand-in; also rejects a PASS that contradicts its own gates,
   findings or ledger gaps) and `claude/scripts/gates.sh <abs step.md> <commit> <sidecar-sha256> [repo]
-  [--stage <dir>] [--wtdir <dir>]` (runs a sidecar's runnable gates through `scripts/run-gates.sh`,
-  the `acceptance.verify` stand-in; fails closed when the sidecar changed since its hash was
-  recorded, has no runnable gate, HEAD is not the commit, or the repo is not clean). `gates.sh
-  --clean <abs planDir> [repo] [--stage] [--wtdir]` is the one clean-tree definition: untracked
-  files count whatever the user's git config, except the plan dir, an all-untracked parent of it
-  (sibling plan dirs), the stage dir and lane worktrees under `--wtdir`. Ignored files are never
-  checked, so gate by-products must be gitignored (the output's `hint` names likely ones). Both
+  [--stage <dir>] [--wtdir <dir>] [--ignore-sha <hex>]` (runs a sidecar's runnable gates through
+  `scripts/run-gates.sh`, the `acceptance.verify` stand-in; fails closed when the sidecar changed
+  since its hash was recorded, has no runnable gate, HEAD is not the commit, the ignore rules
+  changed, or the repo is not clean). `gates.sh --clean <abs planDir> [repo] [--stage] [--wtdir]
+  [--ignore-sha]` is the one clean-tree definition: untracked files count whatever the user's git
+  config, as do assume-unchanged/skip-worktree edits and self-ignoring `.gitignore` files, except
+  the plan dir, untracked sibling plan dirs, the stage dir and lane worktrees under `--wtdir`.
+  Ignored files are never checked, so gate by-products must be ignored (`byproducts` lists likely
+  ones; the executor recommends `.git/info/exclude`), and `ignoreSha` hashes `.git/info/exclude`
+  and `core.excludesFile` so a worker cannot ignore its own files. Plan-dir edits are caught by the
+  executor's `planSha`, not here. Both
   scripts print one JSON object and exit 0, also when `node` or coreutils are missing. Run `gates.sh` with Bash `timeout: 600000` (or in the background) and wait for its
   output; see the `executor` skill.
 - **Questions.** Only the main session talks to the user (`AskUserQuestion` is not available to
   subagents).
-- **Lane worktrees** live under `<repo>/.wt/` (or the repo's existing convention, or the `wtdir`
-  input), ignored through `.git/info/exclude`, on `lane/<step>` branches.
+- **Lane worktrees** live under the `wtdir` input, else `<repo>/.wt/` if present, else
+  `<repo>/.worktrees/` if present, else the executor asks (recommending `.wt/`); ignored through
+  `.git/info/exclude`, on `lane/<step>` branches.
 - **Headless runs.** `claude -p --output-format stream-json` emits one `result` event per
   main-session turn (each background-agent notification starts a turn); the outcome is the last.
 - **`rm` in gates.** Even under `bypassPermissions`, a subagent's `bash -c` script containing `rm`

@@ -160,7 +160,9 @@ a failed worker.
 }
 ```
 
-All ten keys are required. `verdict` is one of `PASS`, `FAIL`, `BLOCKED`. `gates[].class` is one of
+Nine keys are required: all of the above except `commit`, which may be omitted or empty only on
+FAIL/BLOCKED. `gates[].cmd` and `gates[].note` are optional (the orchestrator runs the sidecar's
+commands, not the reported ones). `verdict` is one of `PASS`, `FAIL`, `BLOCKED`. `gates[].class` is one of
 `build`, `static`, `unit`, `integ`, `e2e-smoke`, `regress`; `gates[].result` one of `pass`, `fail`,
 `proxy`, `deferred`, `n/a`. `commit` is a 7–40 char lowercase hex sha, or empty only on
 FAIL/BLOCKED; the orchestrator turns a PASS without a commit into FAIL. Any gate with
@@ -195,8 +197,8 @@ with ToolSearch (`select:SendMessage`)) or re-dispatches it with the answer.
 A step that stopped after its commit exists is resumed, not re-implemented (`executor` skill,
 "Resume"). The orchestrator first proves `commit` exists and descends from the run's `baseCommit`
 (or the sidecar's `base_commit`) with `scripts/commit-check.sh`; with neither, or a failed check, the
-step is `blocked`. `from`: `gates` (re-run the sidecar gates on `commit`, which must be checked out,
-then review), `review` (review `commit`), `fix` (continue the worker with the human's guidance — resumed with `SendMessage` if it
+step is `blocked`. `from`: `gates` (re-run the sidecar gates on `commit`, which must be HEAD of the
+working branch: the orchestrator moves the branch there and never checks out a bare sha, then review), `review` (review `commit`), `fix` (continue the worker with the human's guidance — resumed with `SendMessage` if it
 is still in this session, else a fresh worker from `commit` — then review), `ci` (CI read bound to
 `commit`, then ledger), `ledger` (apply the ledger from the prior `result.json` only). Every
 non-PASS step result records `resumePoint: {from, commit, workerAgentId, args}` in its `result.json`,

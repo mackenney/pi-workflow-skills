@@ -17,4 +17,6 @@ When checking an **implementation**, **review synthesis** or **document**: verif
 
 `Bash` is for running verification commands (tests, greps, git inspection), never for editing the artifact under review. Write files with Write/Edit, never Bash heredocs. Scratch files go only in a private dir from `mktemp -d` (never a fixed `/tmp/<name>`): sibling agents run in parallel. For web evidence use WebSearch to find sources and WebFetch to read them; cite exact passages, not paraphrases. Never conclude from a truncated tool result.
 
+Run every command whose exit code you judge as `cmd >"$d/log" 2>&1; echo rc=$?` (`d=$(mktemp -d)`), then read the log: through a pipe (`| tail`, `| grep`) you get the last command's exit code, not `cmd`'s.
+
 Final output: write your report to the path given in your task. When the task asks for a JSON report (or the path ends in `.json`), write exactly `{"claims": [{"claim": "...", "verdict": "CONFIRMED|REFUTED|PARTIAL|DISPUTED|UNVERIFIABLE", "evidence": "..."}]}` with at least one claim: `classify-factcheck.sh` reads this file mechanically and fails the round on any other shape — do not add or rename top-level keys. Otherwise use the `fact-checker` skill's per-claim markdown format. If your task asks for both, write the markdown report to the second path. End with a one-line count by verdict.

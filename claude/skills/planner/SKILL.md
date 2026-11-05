@@ -136,7 +136,7 @@ reasoning). Round 0 prompt:
 ```
 Mode: plan.
 <Reconcile these angle plans into one unified structural plan: | Simple mode: single-pass structural plan from the spec directly (no angles).>
-Angle <n> output: <planDir>/angle-<n>/plan-summary.md   (one line per surviving angle)
+Angle <n> output: <planDir>/angle-<n>/plan-summary.md, step files beside it   (one line per surviving angle)
 Spec/investigation: <spec>
 Executor tier: <tier>
 Write the unified plan (step files + *.gates.json sidecars) under <planDir>/, a single machine-readable index at <planDir>/plan.json (schema: {steps:[{id,tier,files,gates,coverage,hard_splits_declared}]}), and PROGRESS.md (step-contract ledger sections + ## Steps checklist).
@@ -185,7 +185,8 @@ Save the worker's block verbatim (Write tool) to `<stageDir>/fix-report.json` an
 PROGRESS.md Open Decisions.
 Then run `validate-plan.sh` yourself: not ok → `FAIL` at `plan-fix`, step 6. Then a second
 fact-check exactly as step 3 ("Re-verify the plan at <planDir>/plan.json after fixes. Same report
-schema.") into `<planDir>/factcheck-1.json`, classified the same way and failing closed the same way.
+schema. Reuse the prototype results recorded in <planDir>/factcheck-0.json; build a new prototype
+only for a gate the fix changed.") into `<planDir>/factcheck-1.json`, classified the same way and failing closed the same way.
 
 **5. Outcome.** `clean = refuted == 0 && partial == 0` on the last classification.
 `pendingDecisions`: "<d> disputed fact-check claim(s) - see <factcheck path>" when `disputed > 0`;
@@ -272,7 +273,7 @@ The following are explicitly out of scope per the spec's Non-Goals. Do not inclu
 approaches that cross these boundaries:
 - <non-goal 1>
 
-**Deliverable:** Write your plan to: <absolute path, e.g., <planDir>/angle-1/plan-summary.md>
+**Deliverable:** Write your plan-summary to <absolute path, e.g., <planDir>/angle-1/plan-summary.md> and your step files (with `*.gates.json` sidecars) next to it under <planDir>/angle-1/. The unifier reads the plan-summary first and the step files for detail; a missing or empty plan-summary fails the angle.
 
 **Plan format:**
 ## Overview
@@ -319,10 +320,10 @@ Read each plan in full before writing anything.
 
 **Deliverable:** Write the following files:
 
-### plans/PROGRESS.md
+### <planDir>/PROGRESS.md
 (See format spec below)
 
-### plans/step-NN-<name>.md for each step
+### <planDir>/step-NN-<name>.md for each step
 (See format spec below)
 
 **Resolution rules:**

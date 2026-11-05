@@ -109,7 +109,7 @@ For `fix`, `custom`, and the stages whose skill points here:
 | **fact-check-doc** | fact-checker (after anything that is not plan/review) | `fact-checker` → Stage mode (`wf-fact-checker` → `factcheck.json`, classified by `classify-factcheck.sh`) | document path; args `{stage: "fact-check-doc", agent: "wf-fact-checker", detailFile: "factcheck.json"}` | `model`, `notes` |
 | **fix** | fix (after fact-check-doc) | Single-agent stage procedure, `wf-worker`, task: fix REFUTED/PARTIAL items in the checked document only; skip DISPUTED/UNVERIFIABLE unless confirmed; "Do not emit a FIX-REPORT block; end with ENVELOPE: only." | document + fact-check paths; args `{stage: "fix", agent: "wf-worker", detailFile: "fix-notes.md"}` | `model`, `notes` (scope words like "only typos" go in the task and in `notes`) |
 | **plan** | planner, plan it, `planner -> fact-checker -> fix` | `planner` → "plan, fact-check, fix" (fact-check and fix built in) | `spec`, `planDir` | `angles` (2–4, default 3), `mode: "simple"`, `tier` (executor tier the steps are sized for), `plannerModel`, `synthModel`, `factcheckModel`, `fixModel`, `fixScope`, `notes` |
-| **execute** | executor, implement, run the plan | `executor` → Procedure A (one step) or B (wave) per wave, then **done-check** | `planDir`, `stepFile(s)` (absolute: resolve PROGRESS.md's `./step-NN-*.md` links first) | `tier`, `pr`, `notes`, `wtdir` (Procedure B only: absolute lane worktree dir, passed through to the executor), `resume` (Procedure A only: copy `resumePoint.args`, which include `sidecarSha`, from the stopped step's `result.json`; add `guidance` for `fix`) |
+| **execute** | executor, implement, run the plan | `executor` → Procedure A (one step) or B (wave) per wave, then **done-check** | `planDir`, `stepFile(s)` (absolute: resolve PROGRESS.md's `./step-NN-*.md` links first) | `tier`, `pr`, `notes`, `wtdir` (absolute lane worktree dir, passed through to the executor: Procedure B, and Procedure A when lanes may exist; kept inside copied `resumePoint.args`), `resume` (Procedure A only: copy `resumePoint.args`, which include `sidecarSha`, from the stopped step's `result.json`; add `guidance` for `fix`) |
 | **review** | code-reviewer, `(code-reviewer -> fact-checker -> fix) xN` | `code-reviewer` → "review rounds" (fact-check and fix built in; stops at the first clean round) | `repo`, `baseRef` (start of the change), `target` (one line), `reviewDir` = `<stageDir>` | `maxRounds` = N (default 2), `crossExam` (default true; false for "no x-check"), `diversityModel` ("with sonnet"; see Models), `reviewerModel`, `factcheckModel`, `fixModel`, `fixScope`, `notes` |
 | **e2e** | e2e-tester, test it end to end | `e2e-tester` → Stage mode (`wf-worker`) | spec/plan paths, how to reach the running stack; args `{stage: "e2e", agent: "wf-worker", skill: "e2e-tester", detailFile: "e2e-report.md"}` | `model`, `notes` |
 | **done-check** | is it done, (end of execute) | `executor` → Procedure D (`terminal-gate.sh`) | `planDir` | `pr` (CI bound to HEAD of `repo`; `expectSha` overrides) |
@@ -127,11 +127,14 @@ Rules:
   lane on `sonnet` instead (`diversityModel: "sonnet"`)" / "drop it". "cheap", "small" or "fast model"
   → `haiku` (`inferred`).
 - **`fixScope`** (review and plan): `clear` (fix findings with one obviously right fix, escalate
-  judgement calls), `trivial` (only typos, stale paths, doc drift, one-liners; nits included;
-  everything else escalated), `all` (fix every confirmed finding), `none` (report only). Escalated
+  judgement calls), `trivial` (only typos, stale paths, doc drift, one-liners; nits included, also
+  in a round with no blocker or important finding; everything else escalated), `all` (fix every
+  confirmed finding, nits included), `none` (report only). Escalated
   findings come back as `decision` actionables. Set it from the chain, never by accident:
-  - no `fix`/`fixer` segment or word (`code-reviewer -> fact-checker`, "review it") → `none`, mapped
-    from the stage name with confidence `exact`.
+  - **review**: no `fix`/`fixer` segment or word (`code-reviewer -> fact-checker`, "review it") →
+    `none` (review only), mapped from the stage name with confidence `exact`.
+  - **plan**: no fix word → omit `fixScope`, so the planner keeps its default `clear` (its
+    fact-check and fix are built in); only a fix word or "no fix" sets it.
   - bare `fix`/`fixer`, "fix any problem" → `clear`; "fix everything" → `all`; "trivial",
     "obvious", "small stuff only" → `trivial`; "no fix", "don't fix" → `none`.
 - **Conflicts are ambiguous.** Two phrases that set the same arg to different values ("fix

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// gates.mjs <abs step-file.md> <commit> <sidecar-sha256> [repo] [--stage <dir>] [--wtdir <dir>]
+// gates.mjs <abs step-file.md> <commit> <sidecar-sha256> [repo] [--stage <dir>] [--wtdir <dir>] [--ignore-sha <hex>]
 //   -> run-gates JSON {ok, head, results[{id, pass, exitCode, timedOut, ms, tail}], skipped[]}
-//      (or {ok:false, error, skipped?, hint?}) on stdout.
-// gates.mjs --clean <abs planDir> [repo] [--stage <dir>] [--wtdir <dir>] -> {ok, paths[], error?, hint?}
+//      (or {ok:false, error, skipped?, paths?, byproducts?, allByproducts?, hint?}) on stdout.
+// gates.mjs --clean <abs planDir> [repo] [--stage <dir>] [--wtdir <dir>] [--ignore-sha <hex>]
+//   -> {ok, paths[], byproducts[], allByproducts, ignoreSha, error?, hint?}
 // Always exits 0.
 // Claude Code stand-in for pi's acceptance.verify: reads the step's .gates.json sidecar (same rule as
 // scripts/step-loader.sh), keeps every gate with a cmd that is not n/a or deferred, and runs them through
@@ -10,11 +11,16 @@
 // run-gates checks only HEAD, so an untracked or modified file could make a gate pass that the commit fails: the
 // working tree must be clean. The one definition of "clean" lives here (--clean exposes it to the executor) so the
 // procedure and the gate run cannot disagree. Untracked files are listed per file whatever the user's
-// status.showUntrackedFiles, and submodules are never ignored, because either config would otherwise hide dirt.
-// Not dirty: the plan dir; its parent when nothing under the parent is tracked (sibling untracked plan dirs such as
-// plans/<other>/, .agent-plans/<other>/); --stage; and registered worktrees under --wtdir (lane worktrees). Only
-// worktrees under --wtdir: a worker can register a worktree anywhere, and one inside src/ must still count.
-// Ignored files are never checked (gitignore gate by-products; stale ignored files are outside this guard).
+// status.showUntrackedFiles, submodules are never ignored, and fsmonitor/untracked cache are off, because each
+// would otherwise hide dirt. Tracked files flagged assume-unchanged or skip-worktree are hashed against the index,
+// and untracked .gitignore files count even when they ignore themselves.
+// Not dirty: the plan dir; untracked sibling plan dirs (a directory next to the plan dir holding PROGRESS.md,
+// plan.json or spec.md, with nothing in the index or HEAD); --stage; and registered worktrees under --wtdir (lane
+// worktrees). Only worktrees under --wtdir: a worker can register a worktree anywhere, and one inside src/ must
+// still count. No exclusion may be a symlink, the repo root, or (except the plan dir) hold tracked content.
+// Ignored files are never checked (gitignore gate by-products). The ignore sources outside the tree
+// (.git/info/exclude, core.excludesFile) are hashed into ignoreSha: the caller records it before dispatch and passes
+// --ignore-sha after, so a worker that ignores its own files fails closed.
 // pi loaded the contract once, before the worker ran; here the sidecar is re-read after the worker, so the caller
 // passes the sha256 it recorded before dispatch and any change fails closed. No runnable gate -> ok:false
 // (validate-plan rejects such a step, so an empty set means the sidecar was emptied).
@@ -30,44 +36,97 @@ const real = (p) => { try { return fs.realpathSync(p); } catch { return path.res
 const why = (r) => ((r.stderr || "").trim() || (r.error && r.error.message) || "exit " + r.status);
 const BYPRODUCT = /(^|\/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox|htmlcov|coverage|node_modules|\.venv|dist|build|target|[^/]+\.egg-info)(\/|$)|\.(pyc|pyo|coverage|log)$|(^|\/)\.coverage(\.|$)/;
 
-function dirtyPaths(repo, planDir, { stage, wtdir } = {}) {
-  const git = (args) => spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  const t = git(["rev-parse", "--show-toplevel"]);
+const MARKERS = ["PROGRESS.md", "plan.json", "spec.md"];
+const sha256 = (b) => crypto.createHash("sha256").update(b).digest("hex");
+const readOr = (p) => { try { return fs.readFileSync(p, "utf8"); } catch { return null; } };
+const isLink = (p) => { try { return fs.lstatSync(p.replace(/\/+$/, "")).isSymbolicLink(); } catch { return false; } };
+
+function dirtyPaths(repo, planDir, opt = {}) {
+  try { return dirty(repo, planDir, opt); } catch (e) { return { error: e.message }; }
+}
+
+function dirty(repo, planDir, { stage, wtdir, ignoreSha }) {
+  const run = (cwd, args) => spawnSync("git", ["-C", cwd, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const t = run(repo, ["rev-parse", "--show-toplevel"]);
   if (t.status !== 0) return { error: "git rev-parse failed in " + repo + ": " + why(t) };
   const top = real(t.stdout.trim());
-  const inside = (abs) => { const r = path.relative(top, real(abs)); return r !== "" && !r.startsWith("..") && !path.isAbsolute(r) ? r : null; };
-  if (real(planDir) === top) return { error: "plan dir is the repo root (" + top + "): it must be a subdirectory, or every file would count as plan state" };
+  const git = (args, what) => { const r = run(top, args); if (r.status !== 0) throw new Error("git " + what + " failed in " + top + " (not treated as clean): " + why(r)); return r.stdout; };
+  // "" for the root itself, null outside the repo.
+  const inside = (abs) => { const r = path.relative(top, real(abs)); return r.startsWith("..") || path.isAbsolute(r) ? null : r; };
+  const hasHead = run(top, ["rev-parse", "-q", "--verify", "HEAD"]).status === 0;
+  const tracked = (rel) => git(["ls-files", "--", ":(top,literal)" + rel], "ls-files").trim() !== ""
+    || (hasHead && git(["ls-tree", "-r", "--name-only", "HEAD", "--", ":(top,literal)" + rel], "ls-tree").trim() !== "");
   const ex = new Set();
-  const planRel = inside(planDir);
-  if (planRel) {
-    ex.add(planRel);
-    const parent = path.dirname(planRel);
-    if (parent !== ".") {
-      const tracked = git(["ls-files", "--", ":(top,literal)" + parent]);
-      if (tracked.status !== 0) return { error: "git ls-files failed in " + repo + ": " + why(tracked) };
-      if (tracked.stdout.trim() === "") ex.add(parent);
-    }
+  const candidate = (abs, what, mayTrack) => {
+    if (isLink(abs)) return what + " must not be a symlink: " + abs;
+    const r = inside(abs);
+    if (r === "") return what + " is the repo root (" + top + "): it must be a subdirectory, or every file would count as " + what + " state";
+    if (r === null) return null;
+    if (!mayTrack && ![...ex].some((e) => r === e || r.startsWith(e + "/")) && tracked(r)) return what + " holds tracked files, so excluding it would hide changes: " + r;
+    ex.add(r); return null;
+  };
+  let e = candidate(planDir, "plan dir", true);
+  if (!e && stage) e = candidate(stage, "--stage", false);
+  if (!e && wtdir) {
+    if (isLink(wtdir)) e = "--wtdir must not be a symlink: " + wtdir;
+    else if (inside(wtdir) === "") e = "--wtdir is the repo root (" + top + ")";
   }
-  if (stage) { const r = inside(stage); if (r) ex.add(r); }
+  if (e) return { error: e };
   if (wtdir) {
-    const wl = git(["worktree", "list", "--porcelain"]);
-    if (wl.status !== 0) return { error: "git worktree list failed in " + repo + ": " + why(wl) };
     const root = real(wtdir);
-    for (const line of wl.stdout.split("\n")) {
+    for (const line of git(["worktree", "list", "--porcelain"], "worktree list").split("\n")) {
       if (!line.startsWith("worktree ")) continue;
       const w = real(line.slice(9));
       const under = path.relative(root, w);
       if (under === "" || under.startsWith("..") || path.isAbsolute(under)) continue;
-      const r = inside(w); if (r) ex.add(r);
+      const r = inside(w); if (r && !tracked(r)) ex.add(r);
     }
   }
   const spec = [":(top)", ...[...ex].map((r) => ":(top,literal,exclude)" + r)];
-  const st = spawnSync("git", ["-C", repo, "-c", "status.showUntrackedFiles=all", "status", "--porcelain",
-    "--untracked-files=all", "--ignore-submodules=none", "--", ...spec], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (st.status !== 0) return { error: "git status failed in " + repo + " (not treated as clean): " + why(st) };
-  const paths = st.stdout.split("\n").filter(Boolean);
-  const by = paths.filter((p) => BYPRODUCT.test(p.slice(3)));
-  return { paths, hint: by.length ? "likely gate or tool by-products, gitignore them: " + by.slice(0, 10).join(", ") : undefined };
+  const planRel = inside(planDir);
+  const parent = planRel ? path.dirname(planRel) : ".";
+  const sib = new Map();
+  const sibling = (p) => {
+    if (parent === "." || !p.startsWith(parent + "/")) return false;
+    const d = parent + "/" + p.slice(parent.length + 1).split("/")[0];
+    if (!sib.has(d)) sib.set(d, d !== p && MARKERS.some((m) => fs.existsSync(path.join(top, d, m))) && !tracked(d));
+    return sib.get(d);
+  };
+  const z = (s) => s.split("\0").filter(Boolean);
+  const paths = [];
+  const ent = z(git(["-c", "status.showUntrackedFiles=all", "status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules=none", "--", ...spec], "status"));
+  for (let i = 0; i < ent.length; i++) {
+    const x = ent[i];
+    if (x[0] === "R" || x[0] === "C") i++;
+    if (x.startsWith("?? ") && sibling(x.slice(3))) continue;
+    paths.push(x);
+  }
+  // A .gitignore that ignores itself (or is ignored by info/exclude) hides itself and whatever it lists.
+  for (const p of z(git(["ls-files", "-z", "--others", "--", ":(top,glob)**/.gitignore", ...spec.slice(1)], "ls-files --others")))
+    if (!paths.includes("?? " + p) && !sibling(p)) paths.push("?? " + p);
+  const flagged = z(git(["ls-files", "-v", "-z", "--", ...spec], "ls-files -v"))
+    .filter((x) => x[0] === "S" || /[a-z]/.test(x[0])).map((x) => ({ tag: x[0], p: x.slice(2) }));
+  if (flagged.length) {
+    const blob = new Map(z(git(["ls-files", "-s", "-z", "--", ...flagged.map((f) => ":(top,literal)" + f.p)], "ls-files -s"))
+      .map((x) => { const [meta, p] = x.split("\t"); const [mode, oid] = meta.split(" "); return [p, { mode, oid }]; }));
+    for (const f of flagged) {
+      const b = blob.get(f.p);
+      if (!b || b.mode === "160000" || b.mode === "120000") continue;
+      const flag = f.tag === "S" ? "skip-worktree" : "assume-unchanged";
+      if (!fs.existsSync(path.join(top, f.p))) { if (flag === "assume-unchanged") paths.push(" D " + f.p + " (" + flag + ")"); continue; }
+      if (git(["hash-object", "--", f.p], "hash-object").trim() !== b.oid) paths.push(" M " + f.p + " (" + flag + ")");
+    }
+  }
+  const excl = (run(top, ["config", "--get", "core.excludesFile"]).stdout || "").trim();
+  const xdg = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "", ".config");
+  const exFile = excl ? excl.replace(/^~(?=\/|$)/, process.env.HOME || "~") : path.join(xdg, "git", "ignore");
+  const info = path.resolve(top, git(["rev-parse", "--git-path", "info/exclude"], "rev-parse --git-path").trim());
+  const sha = sha256(JSON.stringify([excl, readOr(path.resolve(top, exFile)), readOr(info)]));
+  if (ignoreSha && ignoreSha !== sha) return { error: "ignore rules changed since they were recorded (" + info + " or core.excludesFile " + exFile + "): a worker may not ignore its own files", ignoreSha: sha };
+  const byproducts = paths.filter((p) => p.startsWith("?? ") && BYPRODUCT.test(p.slice(3)));
+  return { paths, byproducts, allByproducts: paths.length > 0 && byproducts.length === paths.length, ignoreSha: sha,
+    hint: byproducts.length ? byproducts.length + " likely gate or tool by-product(s), ignore them (e.g. .git/info/exclude): " + byproducts.slice(0, 10).join(", ") + (byproducts.length > 10 ? ", ..." : "") : undefined };
 }
 
 function parse(argv) {
@@ -75,6 +134,7 @@ function parse(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--stage" || a === "--wtdir") { if (i + 1 >= argv.length) return { err: a + " needs a directory" }; opt[a.slice(2)] = argv[++i]; }
+    else if (a === "--ignore-sha") { if (i + 1 >= argv.length || !/^[0-9a-f]{64}$/.test(argv[i + 1])) return { err: "--ignore-sha needs the 64-hex ignoreSha from gates.sh --clean" }; opt.ignoreSha = argv[++i]; }
     else if (a === "--clean") opt.clean = true;
     else pos.push(a);
   }
@@ -84,11 +144,11 @@ function parse(argv) {
 
 function clean(pos, opt) {
   const [planDir, repo = process.cwd()] = pos;
-  if (!planDir || pos.length > 2) return { ok: false, error: "usage: gates.sh --clean <abs planDir> [repo] [--stage <dir>] [--wtdir <dir>]" };
+  if (!planDir || pos.length > 2) return { ok: false, error: "usage: gates.sh --clean <abs planDir> [repo] [--stage <dir>] [--wtdir <dir>] [--ignore-sha <hex>]" };
   if (!path.isAbsolute(planDir)) return { ok: false, error: "plan dir must be an absolute path: " + planDir };
   const d = dirtyPaths(repo, planDir, opt);
-  if (d.error) return { ok: false, error: d.error, paths: [] };
-  return { ok: d.paths.length === 0, paths: d.paths.slice(0, 50), ...(d.hint ? { hint: d.hint } : {}) };
+  if (d.error) return { ok: false, error: d.error, paths: [], ...(d.ignoreSha ? { ignoreSha: d.ignoreSha } : {}) };
+  return { ok: d.paths.length === 0, paths: d.paths.slice(0, 50), byproducts: d.byproducts, allByproducts: d.allByproducts, ignoreSha: d.ignoreSha, ...(d.hint ? { hint: d.hint } : {}) };
 }
 
 function main() {
@@ -96,7 +156,7 @@ function main() {
   if (err) return { ok: false, error: err };
   if (opt.clean) return clean(pos, opt);
   const [step, commit, sha, repo = process.cwd()] = pos;
-  if (!step || !commit || !sha || pos.length > 4) return { ok: false, error: "usage: gates.sh <abs step-file.md> <commit> <sidecar-sha256> [repo] [--stage <dir>] [--wtdir <dir>]" };
+  if (!step || !commit || !sha || pos.length > 4) return { ok: false, error: "usage: gates.sh <abs step-file.md> <commit> <sidecar-sha256> [repo] [--stage <dir>] [--wtdir <dir>] [--ignore-sha <hex>]" };
   // A relative path would resolve against the caller's cwd, which differs between the main checkout and lane worktrees.
   if (!path.isAbsolute(step)) return { ok: false, error: "step file must be an absolute path: " + step };
   if (!/^[0-9a-f]{64}$/.test(sha)) return { ok: false, error: "sidecar-sha256 must be 64 lowercase hex (sha256sum of the sidecar recorded before dispatch)" };
@@ -112,7 +172,8 @@ function main() {
   if (gates.length === 0) return { ok: false, error: "no runnable gates in " + sidecar, skipped };
   const dirty = dirtyPaths(repo, path.dirname(sidecar), opt);
   if (dirty.error) return { ok: false, error: dirty.error, skipped };
-  if (dirty.paths.length) return { ok: false, error: "working tree not clean (commit or remove): " + dirty.paths.slice(0, 20).join(", "), skipped, ...(dirty.hint ? { hint: dirty.hint } : {}) };
+  if (dirty.paths.length) return { ok: false, error: "working tree not clean (commit or remove): " + dirty.paths.slice(0, 20).join(", "), skipped,
+    paths: dirty.paths.slice(0, 50), byproducts: dirty.byproducts, allByproducts: dirty.allByproducts, ...(dirty.hint ? { hint: dirty.hint } : {}) };
   const here = path.dirname(fs.realpathSync(fileURLToPath(import.meta.url)));
   const r = spawnSync(path.join(here, "..", "..", "scripts", "run-gates.sh"),
     { input: JSON.stringify({ commit, repo, gates }), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
