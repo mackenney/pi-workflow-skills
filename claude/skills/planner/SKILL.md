@@ -109,7 +109,8 @@ for; default `deep`; `fast` has no Claude Code worker, prefer `standard` or `dee
 `angles` (count or list of angle names; default 3), `maxSynthRounds` (default 3), `fixScope`
 (`clear` default | `trivial` | `all` | `none`), `notes`, and per-role model overrides
 `plannerModel` / `synthModel` / `factcheckModel` / `fixModel` (Claude Code aliases only: `haiku`,
-`sonnet`, `opus`, `fable`; passed as the `Agent` call's `model`). Missing `spec` or `planDir`, or an
+`sonnet`, `opus`, `fable`; passed as the `Agent` call's `model`, always with that tier's `effort`:
+fable `high`, opus and sonnet `medium`, haiku `low`). Missing `spec` or `planDir`, or an
 unknown `fixScope` → stop with a `blocked` brief. Append "User notes for this stage: <notes>" to every
 child prompt, angles included, when `notes` is set.
 
@@ -170,16 +171,14 @@ Fix the plan at <planDir>/plan.json (and affected step files/sidecars/PROGRESS.m
 Keep plan.json and every sidecar identical where they overlap. Re-run bash "<WFS>/scripts/validate-plan.sh" "<planDir>/plan.json" until it prints ok. Do not commit.
 End with the FIX-REPORT: line and json block.
 ```
-Scope text: `all` → "Fix every REFUTED/PARTIAL claim." `clear` → "Fix a REFUTED/PARTIAL claim only
+Scope text: `all` → "Fix every REFUTED/PARTIAL claim. Leave DISPUTED/UNVERIFIABLE claims alone; they go to the human." `clear` → "Fix a REFUTED/PARTIAL claim only
 if its fix is unambiguous (one obviously right correction, no design choice). Record every other one
-as an Open Decision in PROGRESS.md (claim, why it needs the user) instead of fixing it. When a claim
-is the plan's own constraint (not a spec MUST) and its gate checks less than the claim says,
-narrowing the claim to what the gate checks is the unambiguous fix."
+as an Open Decision in PROGRESS.md (claim, why it needs the user) instead of fixing it. Never narrow a claim to what its gate checks: a claim the gate does not prove is an Open
+Decision. Leave DISPUTED/UNVERIFIABLE claims alone; they go to the human."
 `trivial` → "Fix only trivial REFUTED/PARTIAL claims: typos, stale paths/names/commands, doc
 drift, one-line mechanical corrections. Record every other one as an Open Decision in PROGRESS.md
-(claim, why it needs the user) instead of fixing it. When a claim is the plan's own constraint (not
-a spec MUST) and its gate checks less than the claim says, narrowing the claim to what the gate
-checks counts as trivial."
+(claim, why it needs the user) instead of fixing it. Never narrow a claim to what its gate checks: a claim the gate does not prove is an Open
+Decision. Leave DISPUTED/UNVERIFIABLE claims alone; they go to the human."
 Save the worker's block verbatim (Write tool) to `<stageDir>/fix-report.json` and check it with
 `check-block.sh fix-report`. Not ok → `FAIL` at `plan-fix`. Each `escalated` item must appear in
 PROGRESS.md Open Decisions.

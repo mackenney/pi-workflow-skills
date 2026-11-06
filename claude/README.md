@@ -85,7 +85,9 @@ fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClau
   the foreground and return inline. Either way, wait for every agent's result before any file or
   gate check; a check before that is not a failure. Notifications always arrive: never schedule
   wakeups, crons or sleep loops while waiting (in `-p` a pending wakeup keeps the process alive
-  until it fires). Never pass your own attribution trailer to a child; each agent names its own
+  until it fires). A `model` override always goes with its tier's `effort` (fable high, opus/sonnet medium,
+  haiku low; `coordinator` "Models"), never the agent file's effort. Never pass your own
+  attribution trailer to a child; each agent names its own
   model. Pass paths, not content. Each child writes its detail to a file; the main
   session reads files only as a procedure step requires.
 - **Final blocks.** A child's machine-readable result is the last fenced block of its reply,

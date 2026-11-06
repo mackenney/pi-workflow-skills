@@ -306,8 +306,10 @@ Write it to `<stageDir>/step-verdict.json` and run `check-block.sh step-verdict`
 3. `PASS` → A6.
 4. `FAIL` and `round >= maxFixRounds` → `FAIL` at `review`, `resumePoint {from: fix}`. A7.
 5. Otherwise `round += 1`; `SendMessage` the worker (`workerAgentId`; Setup, "Resuming agents"): "Reviewer findings: <path to
-   review-<round-1>.json>. Address each, re-run all gates, commit, end with a new STEP-VERDICT." If
-   the worker cannot be resumed, dispatch a fresh one with the A3 prompt plus the findings path.
+   review-<round-1>.json>. Address each, re-run all gates, commit, end with a new STEP-VERDICT." No
+   `workerAgentId`, or the `SendMessage` fails → `FAIL` at `review` ("worker cannot be resumed for a
+   fix round"), `resumePoint {from: fix}`, A7: never a fresh worker inside the loop (as pi). The
+   human's resume from `fix` then uses A3's fresh-worker fallback.
    Record `planSha` before the message. Run A4 on the reply (a non-PASS → `FAIL`/`BLOCKED` at
    `fix`, `resumePoint {from: fix}`, alt `gates`), then back to 1.
 

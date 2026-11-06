@@ -79,13 +79,17 @@ Every stage ends with exactly this object in `<stageDir>/brief.json`:
 
 At most 12 actionables; no other keys. `decision` = needs the user; `fix` = mechanical next work;
 `info` = worth knowing. Check every brief with `"$WFS/claude/scripts/check-block.sh" envelope
-<stageDir>/brief.json` (with the `WFS=` assignment in the same command); not ok → fix the brief from the stage's facts, never ship an invalid one.
+<stageDir>/brief.json` (with the `WFS=` assignment in the same command). Not ok: a brief you wrote
+yourself (a procedure's own brief, a synthesized `blocked` one) → fix it from the stage's facts; a
+child's envelope → never edit it (that would let you set its `status`): retry, then `blocked`, as
+in steps 3–4 below. Never ship an invalid brief.
 
 ### Single-agent stage procedure (was `workflows/stage.js`)
 
 For `fix`, `custom`, and the stages whose skill points here:
 1. Detail file = `detailFile` (absolute, or relative to `stageDir`), default `<stageDir>/<stage>.md`.
-2. Dispatch the stage's agent (Stage Table) with `model` if given. Prompt: the task, "User notes for
+2. Dispatch the stage's agent (Stage Table) with `model` (and its tier's `effort`, Rules
+   "Models") if given. Prompt: the task, "User notes for
    this stage: <notes>" if any, helper findings paths if any, then:
    ```
    Write your detailed output to <detail file> (all detail goes there).
@@ -121,7 +125,10 @@ Rules:
 - **Models.** A tier word or model name attached to a segment sets that role's model override as a
   Claude Code alias: frontier → `fable`, deep → `opus`, standard → `sonnet`, fast → `haiku`. A tier
   word attached to **plan/execute** as "the steps' size" is `tier`; if you cannot tell which is meant,
-  that is ambiguous. Agents set their own effort; an override changes only the model.
+  that is ambiguous. Every model override carries its tier's effort: pass the `Agent` call's `effort` with `model`
+  (`fable` → `high`, `opus` → `medium`, `sonnet` → `medium`, `haiku` → `low`), never the agent
+  file's own effort, which belongs to its default model (`wf-synthesizer` is fable/high: a
+  `sonnet` override without `effort: medium` would run sonnet at high, which is never allowed).
 - **Vendors.** Only Anthropic models exist here. A request for GPT, DeepSeek or another vendor
   ("with gpt", "deepseek flash") cannot be honoured: map it as `ambiguous` with the options "run that
   lane on `sonnet` instead (`diversityModel: "sonnet"`)" / "drop it". "cheap", "small" or "fast model"

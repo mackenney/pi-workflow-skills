@@ -32,12 +32,13 @@ Prerequisites: a git repository; `gh` CLI for PR reviews.
 | `fixScope` | `none` standalone (report only); from the chain in a coordinator stage | `clear` / `trivial` / `all` / `none` (see R5) |
 | `diversityModel` | off | `"sonnet"` (or another alias): the last angle runs on that model instead of opus. Replaces pi's cross-vendor GPT lane; only model-size diversity remains, not vendor diversity |
 | `baseRef` | merge-base with the base branch | Pins the review range across fix rounds |
-| `reviewerModel` / `factcheckModel` / `fixModel` | agent defaults (opus / opus / sonnet) | Claude Code aliases passed as the `Agent` call's `model` |
+| `reviewerModel` / `factcheckModel` / `fixModel` | agent defaults (opus / opus / sonnet) | Claude Code aliases passed as the `Agent` call's `model`, always with that tier's `effort` (fable `high`, opus/sonnet `medium`, haiku `low`); `diversityModel` likewise |
 | `notes` | — | Free-text intent appended to every child prompt |
 
 Standalone `/code-reviewer` runs R1–R3 once and presents the result. Fact-check and fix (R4–R5)
 run when the user asks for them ("review, fact-check and fix the clear ones") or when the
-coordinator's `review` stage runs this procedure.
+coordinator's `review` stage runs this procedure. Fixing implies the fact-check: a request to fix
+without one ("review and fix") still runs R4 first, as pi does.
 
 ---
 
@@ -151,16 +152,16 @@ re-review round), with the fix report recorded in the round.
 Fact-check the review synthesis at <dir>/synthesis.json (target: <target>[, repo <repo>]). One claim per blocker/important finding: is the defect real at the cited file:line? Write {claims:[{claim, verdict, evidence}]} to <dir>/factcheck.json.
 ```
 `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/classify-factcheck.sh" <dir>/factcheck.json`; `error` or `total` 0 → `FAIL` at
-`factcheck`, stop (fail closed). Without fact-check in this run, skip to R5 only if fixing was asked;
-otherwise stop with state `REPORTED`.
+`factcheck`, stop (fail closed). Without fact-check or fix in this run, stop with state `REPORTED`;
+R5 never runs on blocker/important findings that R4 did not check this round.
 
 **R5. Fix (bounded by `fixScope`).** `none` → state `REPORTED` (confirmed findings left for the
 user), stop. Otherwise `wf-worker`:
 ```
 Target: <target> [Repo] [Review range]
 <scope text>
-[Only when R4 ran this round:] Skip any finding the fact-check at <dir>/factcheck.json marks REFUTED; for DISPUTED/UNVERIFIABLE ones, fix only if you can confirm the defect yourself.
-[Without R4:] No fact-check ran: fix a finding only after confirming the defect yourself; skip it otherwise.
+[Blocker/important pass:] Skip any finding the fact-check at <dir>/factcheck.json marks REFUTED; for DISPUTED/UNVERIFIABLE ones, fix only if you can confirm the defect yourself.
+[Nits-only pass (R3):] Nits are not fact-checked: fix a nit only after confirming it yourself; skip it otherwise.
 Re-run the repo's relevant tests/lint after fixing and, if you changed anything, commit with an imperative message. Use the attribution trailer from your own system reminder, never one copied from the dispatcher.
 End with the FIX-REPORT: line and json block: fixed (titles), escalated ({title, why}: needs the user), skipped ({title, why}: refuted/unconfirmed/out of scope nits).
 ```
@@ -183,9 +184,15 @@ nothing, put corrections in result.json); `WFS="$(readlink -f "${CLAUDE_SKILL_DI
 | none | | no | `FIXED_UNREVIEWED` (fixes made but not re-reviewed), stop |
 | none | | yes | next round |
 
+Escalations carry over: every round's `escalated` titles stay pending until the run ends. When a
+later round ends in `FAIL` (at `synth`, `factcheck` or `fix`), `FAIL` is the state and the carried
+escalations still go to pendingDecisions; `NEEDS_DECISION` is the state only when the run otherwise
+ends without a failure.
+
 **R6. Persist.** `<reviewDir>/result.json` = `{state, stage?, round, rounds: [{round, synthPath,
 fcPath?, reviewClass, fcClass?, fix?}], pendingDecisions}` where pendingDecisions = "disputed review
-claims - see <fcPath>" if the last fact-check has `disputed > 0`, each escalated finding, and for
+claims - see <fcPath>" if the last fact-check has `disputed > 0`, each escalated finding from every
+round (deduplicated by title), and for
 `REPORTED` "unfixed (fixScope none): <b> blocker(s), <i> important - see <synthPath>".
 `<reviewDir>/brief.json` (`coordinator` envelope `{stage, status: done|needs-decision|failed|blocked,
 summary (≤400 chars), actionables: [{what (≤300), kind: decision|fix|info, ref}] (≤12), artifacts:
