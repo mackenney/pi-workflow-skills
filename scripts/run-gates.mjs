@@ -3,7 +3,8 @@
 // {"ok", "head", "results": [{"id", "pass", "exitCode", "timedOut", "ms", "tail"}], "error"?}.
 // Re-runs a step's sidecar gates without a model when a step resumes from "gates" (the worker's commit exists but the
 // runtime's acceptance.verify failed, e.g. on an environment problem since fixed). Gates run in the checkout like
-// acceptance.verify does, so HEAD must be the resume commit: running them on any other tree would prove nothing.
+// acceptance.verify does, so HEAD must be the resume commit: running them on any other tree would prove nothing. The
+// fix is to move the working branch there, never to check out the bare sha (that detaches HEAD and drops later work).
 // ok only when every gate exits 0. Output tails stay short to keep stdout far below the runner's 64 KiB cap. Always exits 0.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -16,7 +17,7 @@ if (!Array.isArray(task.gates) || task.gates.length === 0) done({ ok: false, err
 if (!/^[0-9a-f]{7,40}$/i.test(String(task.commit ?? ""))) done({ ok: false, error: "commit must be 7-40 hex chars" });
 const h = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" });
 const head = h.status === 0 ? h.stdout.trim() : null;
-if (!head || !head.toLowerCase().startsWith(String(task.commit).toLowerCase())) done({ ok: false, head, error: "HEAD is " + (head ?? "unreadable") + ", not " + task.commit + "; check the commit out before resuming from gates" });
+if (!head || !head.toLowerCase().startsWith(String(task.commit).toLowerCase())) done({ ok: false, head, error: "HEAD is " + (head ?? "unreadable") + ", not " + task.commit + " in " + cwd + "; move the branch there (never check out a bare sha: it detaches HEAD)" });
 
 const results = [];
 for (const g of task.gates) {

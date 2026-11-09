@@ -18,7 +18,7 @@ out="$(wf '{}' "{\"implement\":$IMPL_OK,\"review-0\":{\"ok\":false,\"error\":\"c
 check "e: failed reviewer with output is still retried, not trusted" '.env.status == "done" and (.calls | index("review-0-retry"))' "$out"
 
 out="$(ww "{\"impl-step-01-x\":{\"ok\":false,\"error\":\"acceptance rejected\",\"structuredOutput\":$FAIL_C1}}")"
-check "e: wave lane worker FAIL+commit -> resume from fix actionable" '.result.board[0].state == "FAIL" and .result.board[0].commit == "'"$C1"'" and .result.board[0].resumeFrom == "fix" and .result.board[0].workerRunId == "run-impl-step-01-x" and any(.env.actionables[]; .what | test("resume \\{from: \"fix\", commit: \"'"$C1"'\""))' "$out"
+check "e: wave lane worker FAIL+commit -> resume from fix actionable" '.result.board[0].state == "FAIL" and .result.board[0].commit == "'"$C1"'" and .result.board[0].resumeFrom == "fix" and .result.board[0].workerRunId == "run-impl-step-01-x" and .result.board[0].sidecarSha == "'"$(sha256sum "$PD/step-01-x.gates.json" | cut -d' ' -f1)"'" and any(.env.actionables[]; .what | test("resume \\{from: \"fix\", commit: <HEAD after the merge, '"${C1:0:12}"' if fast-forward>"))' "$out"
 out="$(ww "{\"impl-step-01-x\":{\"ok\":false,\"error\":\"verify failed\",\"structuredOutput\":$(SV PASS "$C1")}}")"
 check "e: wave lane claimed PASS rejected by gates -> resume from gates" '.result.board[0].resumeFrom == "gates"' "$out"
 

@@ -1,6 +1,6 @@
 ---
 name: wf-host-command
-description: Runs one allow-listed pi-workflow-skills host script (step-loader, ci-gate, terminal-gate, ledger-apply, write-artifact, commit-check, run-gates). Extracts the JSON task from the combined system/task stdin prompt and returns JSON on stdout. No model. Callers must keep stdout compact; captured output is capped at the last 64 KiB.
+description: Runs one allow-listed pi-workflow-skills host script (step-loader, ci-gate, terminal-gate, ledger-apply, write-artifact, commit-check, run-gates, tree-check). Extracts the JSON task from the combined system/task stdin prompt and returns JSON on stdout. No model. Callers must keep stdout compact; captured output is capped at the last 64 KiB.
 runner:
   type: external-cli
   command: bash

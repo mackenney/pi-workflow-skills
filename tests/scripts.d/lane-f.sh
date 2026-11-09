@@ -11,4 +11,4 @@ out="$(wf '{}' "{\"implement\":{\"ok\":false,\"error\":\"verify failed\",\"struc
 check "f: runtime-rejected claimed PASS keeps gates primary and adds fix" '.result.resumePoint.from == "gates" and .result.resumeAlternatives[0].from == "fix"' "$out"
 
 out="$(ww "{\"impl-step-01-x\":{\"ok\":false,\"error\":\"acceptance rejected\",\"structuredOutput\":$FAIL_C1}}")"
-check "f: wave lane FAIL+commit gets fix and gates actionables" '[.env.actionables[] | select(.kind == "fix")] as $a | any($a[]; .what | test("resume \\{from: \"fix\"")) and any($a[]; .what | test("resume from gates .*resume \\{from: \"gates\", commit: \"'"$C1"'\""))' "$out"
+check "f: wave lane FAIL+commit gets fix and gates actionables" '[.env.actionables[] | select(.kind == "fix")] as $a | any($a[]; .what | test("resume \\{from: \"fix\"")) and any($a[]; .what | test("resume from gates .*resume \\{from: \"gates\", commit: <HEAD after the merge>.*sidecarSha"))' "$out"

@@ -123,7 +123,7 @@ fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClau
   `scripts/run-gates.sh`, the `acceptance.verify` stand-in; fails closed when the sidecar changed
   since its hash was recorded, has no runnable gate, HEAD is not the commit, the ignore rules
   changed, or the repo is not clean). `gates.sh --clean <abs planDir> [repo] [--stage] [--wtdir]
-  [--ignore-sha]` is the one clean-tree definition: untracked files count whatever the user's git
+  [--ignore-sha]` is the one clean-tree definition (code in `scripts/lib/clean.mjs`, shared with pi's `tree-check`): untracked files count whatever the user's git
   config, as do assume-unchanged/skip-worktree edits and self-ignoring `.gitignore` files, except
   the plan dir, untracked sibling plan dirs, the stage dir and lane worktrees under `--wtdir`.
   Ignored files are never checked, so gate by-products must be ignored (`byproducts` lists likely

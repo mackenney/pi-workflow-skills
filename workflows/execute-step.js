@@ -1,6 +1,12 @@
-// args: { stepFile: "/abs/plans/x/step-07-name.md", planDir: "/abs/plans/x", baseCommit?: "abc123", stageDir?: "/abs/run/NN-execute",
+// args: { stepFile: "/abs/plans/x/step-07-name.md", planDir: "/abs/plans/x", baseCommit?: "abc123", reviewBase?: "<sha>", sidecarSha?: "<sha256>", stageDir?: "/abs/run/NN-execute",
 //         tier?: "deep"|"standard"|"fast", worker?: "<agent name>", pr?: 123, maxFixRounds?: 2, ledgerFile?: "PROGRESS.md", notes?: "<user intent, appended to the worker task>",
 //         resume?: { from: "gates"|"review"|"fix"|"ci"|"ledger", commit: "<sha>", workerRunId?, guidance?, resultPath?: "<prior stageDir>/result.json" } }
+// baseCommit (else the sidecar's base_commit, else HEAD on a fresh run) only proves a resume commit's ancestry. reviewBase
+// is the tree the step's own change is measured against (scope, fails-before): the arg, else HEAD at a fresh start (the
+// integrated tree), else baseCommit. The sidecar's base_commit is the plan's original base: measuring a later step
+// against it would put earlier steps in its scope. sidecarSha (required with resume) is the sidecar's sha256 at first
+// dispatch; tree-check (scripts/tree-check.mjs) blocks a dirty tree before dispatch, and after every worker PASS a
+// change to the plan files, uncommitted work, or a HEAD that is not the verdict commit on a branch.
 // Resume continues a stopped step from its commit instead of re-implementing it. Every non-PASS result records
 // `resumePoint: {from, commit, workerRunId, args}` in result.json and a `fix` actionable carrying the resume args.
 // Returns the stage envelope {stage, status, summary, actionables, artifacts} (skills/coordinator/SKILL.md); the full
@@ -14,7 +20,7 @@ const safe = (p) => p.then((r) => r, (e) => ({ ok: false, error: String((e && e.
 // runs.run's rejection carries only a message: a failed worker's STEP-VERDICT (its commit) and runId would be lost, and
 // resume needs both. runs.all with a config object returns the full failed result; safe() still catches launch errors.
 const one = (key, params) => safe(runs.all([{ key, ...params }]).then((rs) => rs[0]));
-const ALLOWED_ARGS = ["stepFile", "planDir", "baseCommit", "stageDir", "tier", "worker", "pr", "maxFixRounds", "ledgerFile", "notes", "resume"];
+const ALLOWED_ARGS = ["stepFile", "planDir", "baseCommit", "reviewBase", "sidecarSha", "stageDir", "tier", "worker", "pr", "maxFixRounds", "ledgerFile", "notes", "resume"];
 const badArgs = Object.keys(args ?? {}).filter((k) => !ALLOWED_ARGS.includes(k));
 if (badArgs.length) {
   // A misspelled or invented arg must not be dropped silently.
@@ -79,27 +85,77 @@ const resumeAt = (from, commit, workerRunId) => (commit ? { from, commit, worker
 const altResume = (from, commit, workerRunId) => (commit ? [resumeAt(from, commit, workerRunId)] : []);
 // A worker PASS the runtime's acceptance rejected is a FAIL; returning "PASS" here would reach the tail with no ledger.
 const failState = (v) => (v?.verdict === "BLOCKED" ? "BLOCKED" : "FAIL");
-const fixPassless = (v) => (v && v.verdict === "PASS" && !v.commit ? { ...v, verdict: "FAIL", residual_risks: [...(v.residual_risks ?? []), "PASS without a commit sha"] } : v);
+const failedIds = (gs) => (Array.isArray(gs) ? gs.filter((g) => g && g.result === "fail").map((g) => g.id) : []);
+// A PASS that contradicts itself (no commit, or its own gates failed) is a FAIL; outputSchema cannot express either.
+const fixPassless = (v) => {
+  if (!v || v.verdict !== "PASS") return v;
+  const why = !v.commit ? "PASS without a commit sha" : failedIds(v.gates).length ? "contradictory PASS: gate(s) " + failedIds(v.gates).join(", ") + " failed" : null;
+  return why ? { ...v, verdict: "FAIL", residual_risks: [...(v.residual_risks ?? []), why] } : v;
+};
+// Same rule for a review: a PASS with failed gates, P0/P1 findings or ledger gaps is routed as a FAIL with its findings.
+const reviewContradiction = (rv) => {
+  if (!rv || rv.verdict !== "PASS") return null;
+  const why = [];
+  if (failedIds(rv.gates).length) why.push("gate(s) " + failedIds(rv.gates).join(", ") + " failed");
+  const blocking = (rv.findings ?? []).filter((f) => f && f.severity !== "P2").length;
+  if (blocking) why.push(blocking + " P0/P1 finding(s)");
+  if ((rv.ledger_gaps ?? []).length) why.push(rv.ledger_gaps.length + " ledger gap(s)");
+  return why.length ? "contradictory PASS: " + why.join("; ") : null;
+};
+const parseOut = (r) => { try { return r && r.ok ? JSON.parse(r.output) : null; } catch (e) { return null; } };
 
 // Every exit sets `result` and leaves the block; the tail applies the ledger, persists details and returns the envelope.
 let result = null;
+// Set inside main once known; the tail writes them into result.json and every resume point's args.
+let baseOutRec = null; let reviewBaseRec = null; let sidecarShaRec = args.sidecarSha ?? null; let ignoreShaRec = null;
 main: {
 
 // 1. Load the planner-authored gate sidecar mechanically (typed step; no LLM transcription).
 const loaded = await safe(runs.run("gates", { agent: "wf-host-command", label: "Load step gates", task: JSON.stringify({ script: "step-loader", stepFile: args.stepFile }) }));
-if (!loaded.ok) { result = { state: "BLOCKED", reason: "gate sidecar unreadable", error: loaded.error }; break main; }
+if (!loaded.ok) { result = { state: "BLOCKED", stage: "contract", reason: "gate sidecar unreadable", error: loaded.error }; break main; }
 let contract = null; // { step, tier, base_commit?, gates:[{id,class,cmd,timeoutMs,proxy?,result?}], coverage:[...], hard_splits_declared:[...] }
 try { contract = JSON.parse(loaded.output); } catch (e) { contract = null; }
-if (!contract || contract.error || !Array.isArray(contract.gates)) { result = { state: "BLOCKED", reason: "gate sidecar unusable", error: contract?.error ?? "no gates array in " + sidecar }; break main; }
+if (!contract || contract.error || !Array.isArray(contract.gates)) { result = { state: "BLOCKED", stage: "contract", reason: "gate sidecar unusable", error: contract?.error ?? "no gates array in " + sidecar }; break main; }
 
 const tier = args.tier ?? contract.tier ?? "deep"; // deep is the trial default (RECOMMENDATIONS-v2 R1)
 const lane = WORKER_BY_TIER[tier];
-if (!lane) { result = { state: "BLOCKED", reason: "no worker lane for tier " + tier + " (lanes: " + Object.keys(WORKER_BY_TIER).join(", ") + "; frontier-sized steps must be split or planned as deep)" }; break main; }
+if (!lane) { result = { state: "BLOCKED", stage: "contract", reason: "no worker lane for tier " + tier + " (lanes: " + Object.keys(WORKER_BY_TIER).join(", ") + "; frontier-sized steps must be split or planned as deep)" }; break main; }
 const workerAgent = args.worker ?? lane.agent;
 const baseRef = args.baseCommit ?? contract.base_commit;
 const verify = contract.gates
   .filter((g) => g.cmd && g.result !== "n/a" && g.result !== "deferred") // deferred gates are owed by a later step and ledgered, not run here
   .map((g) => ({ id: g.id, command: g.cmd, timeoutMs: g.timeoutMs ?? 900000 })); // default verify timeout is 120 s; builds need more
+// An empty set would let acceptance pass on the worker's word; validate-plan rejects such a step, so it means a bad sidecar.
+if (verify.length === 0) { result = { state: "BLOCKED", stage: "contract", reason: "no runnable gates in " + sidecar + " (every gate is n/a, deferred or has no cmd)" }; break main; }
+
+// 1a. Tree and plan integrity before any model runs (fail closed). planSha covers the files a worker must not edit.
+const hashFiles = [args.stepFile, sidecar, args.planDir + "/plan.json", ledgerPath];
+const treeTask = (extra) => JSON.stringify({ script: "tree-check", planDir: args.planDir, stageDir, hashFiles, ...extra });
+const pre = parseOut(await safe(runs.run("tree-pre", { agent: "wf-host-command", label: "Check tree before " + contract.step,
+  task: treeTask({ drift: { sidecar, planJson: args.planDir + "/plan.json" } }) })));
+// A block before the resume guard keeps the incoming resume so the next attempt can start from this brief.
+const keepResume = R && typeof R === "object" && R.commit ? { from: R.from, commit: R.commit, workerRunId: R.workerRunId ?? null } : null;
+if (!pre || (pre.error && !pre.planSha)) { result = { state: "BLOCKED", stage: "contract", reason: "tree-check failed: " + (pre?.error ?? "output unparseable"), resumePoint: keepResume }; break main; }
+if (pre.drift) { result = { state: "BLOCKED", stage: "contract", reason: "sidecar drifted from plan.json: " + pre.drift, resumePoint: keepResume }; break main; }
+if (pre.error || !pre.clean) { result = { state: "BLOCKED", stage: "contract", reason: pre.error ?? "tree not clean before dispatch: " + pre.paths.slice(0, 10).join(", ") + (pre.hint ? " (" + pre.hint + ")" : ""), resumePoint: keepResume }; break main; }
+const sidecarSha = pre.hashes[sidecar];
+if (R !== undefined && !args.sidecarSha) { result = { state: "BLOCKED", stage: "contract", reason: "resume needs sidecarSha (the sidecar hash recorded at first dispatch; it is in the stopped run's resumePoint.args)", resumePoint: keepResume }; break main; }
+if (args.sidecarSha && args.sidecarSha !== sidecarSha) { result = { state: "BLOCKED", stage: "contract", reason: "sidecar changed since the stopped run; restore it, or have the human approve the new hash " + sidecarSha + " and pass it as sidecarSha", resumePoint: keepResume }; break main; }
+const baseOut = baseRef ?? pre.head;
+const reviewBase = args.reviewBase ?? (R === undefined ? pre.head : baseRef) ?? "HEAD";
+baseOutRec = baseOut ?? null; reviewBaseRec = reviewBase; sidecarShaRec = sidecarSha; ignoreShaRec = pre.ignoreSha;
+// After a worker PASS: the plan files are untouched, HEAD is the verdict commit on a branch, and nothing is left
+// uncommitted. Returns the failing result, or null. ignoreSha from the first check makes a self-ignoring worker fail.
+const afterWorker = (chk, commit, stage, workerRunId) => {
+  if (!chk || !chk.planSha) return { state: "BLOCKED", stage: "gates", reason: "tree-check failed: " + (chk?.error ?? "output unparseable"), resumePoint: resumeAt("gates", commit, workerRunId) };
+  if (chk.planSha !== pre.planSha) return { state: "BLOCKED", stage, reason: "plan files changed during the run (step file, sidecar, plan.json or ledger): restore them, then resume", resumePoint: resumeAt("gates", commit, workerRunId) };
+  if (chk.error) return { state: "BLOCKED", stage: "gates", reason: chk.error, resumePoint: resumeAt("gates", commit, workerRunId) };
+  if (!chk.branch || !String(chk.head ?? "").toLowerCase().startsWith(String(commit).toLowerCase())) return { state: "BLOCKED", stage: "gates", reason: "HEAD is not the step commit on the working branch (HEAD " + String(chk.head).slice(0, 12) + (chk.branch ? "" : ", detached") + "): move the branch to it, never check out a bare sha", resumePoint: resumeAt("gates", commit, workerRunId) };
+  if (!chk.clean && chk.allByproducts) return { state: "BLOCKED", stage: "gates", reason: "gate by-products in the tree: " + chk.hint + "; ignore them (.git/info/exclude), then resume", resumePoint: resumeAt("gates", commit, workerRunId) };
+  if (!chk.clean) return { state: "FAIL", stage, reason: "worker left uncommitted work: " + chk.paths.slice(0, 10).join(", "), resumePoint: resumeAt("fix", commit, workerRunId), resumeAlternatives: altResume("gates", commit, workerRunId) };
+  return null;
+};
+const treePost = (key, label) => safe(runs.run(key, { agent: "wf-host-command", label, task: treeTask({ ignoreSha: pre.ignoreSha }) }));
 
 // 1b. Resume: prove the commit is real work on this step's base before any model or ledger touches it (fail closed).
 let prior = null; let resumeCommit = null;
@@ -115,6 +171,11 @@ if (R !== undefined) {
   try { chk = cc.ok ? JSON.parse(cc.output) : null; } catch (e) { chk = null; }
   if (!chk || !chk.ok) { result = { state: "BLOCKED", stage: "resume", reason: "resume commit rejected: " + (chk?.error ?? cc.error ?? "commit-check output unparseable") }; break main; }
   resumeCommit = chk.commit;
+  // gates and review judge the checkout, so it must already be this commit on a branch; checking out the sha would
+  // detach HEAD and drop whatever was integrated after it.
+  if ((R.from === "gates" || R.from === "review") && (!pre.branch || pre.head !== resumeCommit)) {
+    result = { state: "BLOCKED", stage: "resume", reason: "HEAD " + String(pre.head).slice(0, 12) + (pre.branch ? "" : " (detached)") + " is not the resume commit on the working branch: move the branch to " + resumeCommit.slice(0, 12) + " (never check out a bare sha)", resumePoint: keepResume }; break main;
+  }
   if (R.resultPath) {
     const rd = await safe(runs.run("resume-read", { agent: "wf-host-command", label: "Read prior result", task: JSON.stringify({ script: "write-artifact", read: R.resultPath }) }));
     let got = null;
@@ -137,7 +198,7 @@ const workerTask = [
   "Step file: " + args.stepFile,
   "Gate sidecar: " + sidecar,
   "Ledger (read-only for you): " + ledgerPath + " — report ledger rows in your verdict; a script writes the file from it.",
-  "Base commit for fails-before checks: " + (baseRef ?? "HEAD"),
+  "Base commit for fails-before checks: " + reviewBase,
   // Without this the worker leaves changes uncommitted ("parent controls commits") and burns a fix round.
   "Commit your work (scoped to the step's files) and report the sha in STEP-VERDICT.commit. Do not edit the ledger.",
   // Observed 2026-10-05: a worker "fixed" an impossible gate by editing the sidecar. The runtime still failed it (verify is
@@ -183,10 +244,11 @@ if (!R) {
     const rp = resumeAt(rejected ? "gates" : "fix", verdict?.commit, impl.runId);
     result = { state: failState(verdict), stage: "implement", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance, resumePoint: rp, resumeAlternatives: altResume(rejected ? "fix" : "gates", verdict?.commit, impl.runId) }; break main;
   }
+  const bad = afterWorker(parseOut(await treePost("tree-implement", "Check tree after " + contract.step)), verdict.commit, "implement", impl.runId);
+  if (bad) { result = { ...bad, runId: impl.runId, verdict }; break main; }
 } else if (from === "gates") {
   const tmo = verify.reduce((s, g) => s + g.timeoutMs, 0) + 60000;
-  const rg = verify.length === 0 ? { ok: true, output: JSON.stringify({ ok: true, results: [] }) }
-    : await safe(runs.run("resume-gates", { agent: "wf-host-command", label: "Re-run gates for " + contract.step, timeoutMs: tmo,
+  const rg = await safe(runs.run("resume-gates", { agent: "wf-host-command", label: "Re-run gates for " + contract.step, timeoutMs: tmo,
       task: JSON.stringify({ script: "run-gates", commit: resumeCommit, gates: verify }) }));
   let gr = null;
   try { gr = rg.ok ? JSON.parse(rg.output) : null; } catch (e) { gr = null; }
@@ -217,7 +279,7 @@ if (!R) {
   if (!R.workerRunId || (!impl.ok && !impl.structuredOutput)) {
     impl = await one("resume-fresh", {
       agent: workerAgent, label: "Continue " + contract.step,
-      task: workerTask + "\nResuming: commit " + resumeCommit + " already holds earlier work on this step. Continue from it (check it out if HEAD differs); do not start over." + guidance + findings,
+      task: workerTask + "\nResuming: commit " + resumeCommit + " already holds earlier work on this step. Continue on the current branch; do not check out another commit and do not start over." + guidance + findings,
       ...(lane.skill ? { skill: lane.skill } : {}),
       outputSchema: STEP_VERDICT, acceptance: ACCEPTANCE
     });
@@ -226,6 +288,8 @@ if (!R) {
   if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
     result = { state: failState(verdict), stage: "fix", runId: impl.runId, verdict, error: impl.error, acceptance: impl.acceptance, resumePoint: resumeAt("fix", verdict?.commit ?? resumeCommit, impl.runId), resumeAlternatives: altResume("gates", verdict?.commit ?? resumeCommit, impl.runId) }; break main;
   }
+  const bad = afterWorker(parseOut(await treePost("tree-resume-fix", "Check tree after " + contract.step)), verdict.commit, "fix", impl.runId);
+  if (bad) { result = { ...bad, runId: impl.runId, verdict }; break main; }
 }
 
 // 3. Independent review with typed verdict, then bounded fix rounds on the retained worker.
@@ -239,7 +303,7 @@ if (from !== "ci" && from !== "ledger") {
       task: [
         "Review plan step " + contract.step + ", commit " + verdict.commit + ".",
         "Step file: " + args.stepFile, "Gate sidecar: " + sidecar,
-        "Ledger: " + ledgerPath, "Base commit: " + (baseRef ?? "HEAD"),
+        "Ledger: " + ledgerPath, "Base commit: " + reviewBase + " (the step's change is " + reviewBase + ".." + verdict.commit + ")",
         "Worker STEP-VERDICT JSON:", JSON.stringify(verdict)
       ].join("\n"),
       outputSchema: REVIEW_VERDICT
@@ -248,6 +312,8 @@ if (from !== "ci" && from !== "ledger") {
     // A reviewer crash says nothing about the work: retry once, and never spend a fix round on it.
     if (!review.ok || !review.structuredOutput) review = await one("review-" + round + "-retry", reviewItem);
     rv = review.structuredOutput;
+    const contradiction = reviewContradiction(rv);
+    if (contradiction) rv = { ...rv, verdict: "FAIL", contradiction };
     if (!review.ok || !rv) {
       result = { state: "BLOCKED", stage: "review", round, reason: "reviewer failed twice (infrastructure): " + String(review.error ?? "no REVIEW-VERDICT"), verdict, workerRunId: impl.runId, resumePoint: resumeAt("review", verdict.commit, impl.runId) }; break main;
     }
@@ -273,6 +339,13 @@ if (from !== "ci" && from !== "ledger") {
     if (!impl.ok || !verdict || verdict.verdict !== "PASS") {
       result = { state: failState(verdict), stage: "fix", round, runId: impl.runId, verdict, review: rv, error: impl.error, resumePoint: resumeAt("fix", verdict?.commit ?? lastCommit, impl.runId), resumeAlternatives: altResume("gates", verdict?.commit ?? lastCommit, impl.runId) }; break main;
     }
+    const badFix = afterWorker(parseOut(await treePost("tree-fix-" + round, "Check tree after fix " + round)), verdict.commit, "fix", impl.runId);
+    if (badFix) { result = { ...badFix, round, runId: impl.runId, verdict, review: rv }; break main; }
+  }
+  // The reviewer has bash too: the ledger is applied only if the plan files are still the ones this run started from.
+  const postReview = parseOut(await treePost("tree-review", "Check plan files after review"));
+  if (!postReview || postReview.planSha !== pre.planSha) {
+    result = { state: "BLOCKED", stage: "review", reason: postReview ? "plan files changed during the review: restore them, then resume" : "tree-check failed after review", verdict, review: rv, workerRunId: impl.runId, resumePoint: resumeAt("review", verdict.commit, impl.runId) }; break main;
   }
 }
 
@@ -307,6 +380,7 @@ result = { state: finalState, ...(finalState === "PASS" ? {} : { stage: "ci", re
 }
 
 // Tail: ledger, persisted details, envelope.
+result = { ...result, ...(sidecarShaRec ? { sidecarSha: sidecarShaRec } : {}), ...(ignoreShaRec ? { ignoreSha: ignoreShaRec } : {}) };
 const verdictOut = result.ledger ? null : result.verdict;
 let ledgerApply = null;
 if (result.ledger) {
@@ -320,7 +394,7 @@ if (result.ledger) {
 // stageDir keeps this run's result.json intact.
 const withArgs = (pt) => {
   const { resume: _old, ...rest } = args;
-  return { ...pt, args: { ...rest, stageDir: stageDir + "-resume-" + pt.from, resume: { from: pt.from, commit: pt.commit, ...(pt.workerRunId ? { workerRunId: pt.workerRunId } : {}), resultPath: stageDir + "/result.json" } } };
+  return { ...pt, args: { ...rest, ...(baseOutRec ? { baseCommit: baseOutRec } : {}), ...(reviewBaseRec ? { reviewBase: reviewBaseRec } : {}), ...(sidecarShaRec ? { sidecarSha: sidecarShaRec } : {}), stageDir: stageDir + "-resume-" + pt.from, resume: { from: pt.from, commit: pt.commit, ...(pt.workerRunId ? { workerRunId: pt.workerRunId } : {}), resultPath: stageDir + "/result.json" } } };
 };
 const rp = result.state !== "PASS" && result.resumePoint ? withArgs(result.resumePoint) : null;
 const alts = rp ? (result.resumeAlternatives ?? []).map(withArgs) : [];

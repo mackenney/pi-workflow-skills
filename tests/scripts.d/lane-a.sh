@@ -25,7 +25,7 @@ rg() { (cd "$RA/repo" && "$S/run-gates.sh" <<< "$1"); }
 check "run-gates: all pass at HEAD" '.ok == true and (.results | length) == 2 and all(.results[]; .pass)' "$(rg '{"commit":"'"$C1"'","gates":[{"id":"a","command":"true"},{"id":"b","command":"test -f b"}]}')"
 check "run-gates: failing gate" '.ok == false and .results[1].pass == false and .results[1].exitCode == 3 and (.results[1].tail | test("oops"))' "$(rg '{"commit":"'"$C1"'","gates":[{"id":"a","command":"true"},{"id":"b","command":"echo oops; exit 3"}]}')"
 check "run-gates: timeout" '.ok == false and .results[0].timedOut == true' "$(rg '{"commit":"'"$C1"'","gates":[{"id":"a","command":"sleep 5","timeoutMs":200}]}')"
-check "run-gates: HEAD is not the commit" '.ok == false and (.error | test("check the commit out"))' "$(rg '{"commit":"'"$C0"'","gates":[{"id":"a","command":"true"}]}')"
+check "run-gates: HEAD is not the commit" '.ok == false and (.error | test("move the branch there"))' "$(rg '{"commit":"'"$C0"'","gates":[{"id":"a","command":"true"}]}')"
 check "run-gates: empty gates" '.ok == false' "$(rg '{"commit":"'"$C1"'","gates":[]}')"
 
 # write-artifact read
@@ -54,7 +54,7 @@ const calls = [];
 // (losing structuredOutput/runId), while runs.all with config objects (collectFailure) returns the failed result.
 // "reject" in the scenario is a child that failed with no output. Keys absent from the table reject either way.
 const launch = (key, item, via) => {
-  calls.push({ key, via, agent: item.agent ?? null, resume: item.resume ?? null, hasSchema: !!item.outputSchema, hasAcceptance: !!item.acceptance });
+  calls.push({ key, via, agent: item.agent ?? null, resume: item.resume ?? null, hasSchema: !!item.outputSchema, hasAcceptance: !!item.acceptance, ...(item.agent === "wf-host-command" ? {} : { task: item.task }) });
   if (item.agent === "wf-host-command") {
     const task = JSON.parse(item.task);
     const r = spawnSync(scripts + "/" + task.script + ".sh", { input: JSON.stringify(task), cwd: repo, encoding: "utf8" });
@@ -63,7 +63,10 @@ const launch = (key, item, via) => {
   const resp = scenario[key];
   if (resp === undefined) return Promise.reject(new Error("unexpected launch " + key));
   if (resp === "reject") return Promise.resolve({ ok: false, error: "child failed: " + key, runId: "run-" + key });
-  return Promise.resolve({ runId: "run-" + key, ...resp });
+  // "sh": what the child did to the checkout (a stray file, a plan edit), run in the repo before it answers.
+  const { sh, ...rest } = resp;
+  if (sh) spawnSync("bash", ["-c", sh], { cwd: repo });
+  return Promise.resolve({ runId: "run-" + key, ...rest });
 };
 const runs = {
   run(key, item) {
@@ -85,13 +88,16 @@ JS
 PD="$RA/repo/plan"; mkdir -p "$PD"
 mk_step() { # gate-cmd
   jq -n --arg c0 "$C0" --arg cmd "$1" '{step:"step-01-x",tier:"standard",base_commit:$c0,gates:[{id:"g-unit-1",class:"unit",cmd:$cmd}],coverage:[{row:"r",gate:"g-unit-1"}],hard_splits_declared:[]}' > "$PD/step-01-x.gates.json"
+  jq '{steps:[{id:.step, tier, gates, coverage}]}' "$PD/step-01-x.gates.json" > "$PD/plan.json"
   printf '# step-01-x\n' > "$PD/step-01-x.md"
   ledger "$PD/PROGRESS.md" "" "" $'## Steps\n- [ ] [step-01-x](./step-01-x.md)'
 }
 n=0
 wf() { # args-json-extra scenario-json
   n=$((n+1)); local sd="$RA/stage-$n"
-  local a; a="$(jq -c --arg sf "$PD/step-01-x.md" --arg pd "$PD" --arg sd "$sd" '{stepFile:$sf, planDir:$pd, stageDir:$sd} + .' <<< "$1")"
+  # A resume needs the sidecar hash recorded at first dispatch; tests that do not set one get the current hash.
+  local ss; ss="$(sha256sum "$PD/step-01-x.gates.json" | cut -d' ' -f1)"
+  local a; a="$(jq -c --arg sf "$PD/step-01-x.md" --arg pd "$PD" --arg sd "$sd" --arg ss "$ss" '{stepFile:$sf, planDir:$pd, stageDir:$sd} + (if has("resume") and (has("sidecarSha") | not) then {sidecarSha:$ss} else {} end) + .' <<< "$1")"
   node "$T/wf-harness.mjs" "$ROOT/workflows/execute-step.js" "$a" "$2" "$RA/repo" "$S"
 }
 SV() { jq -nc --arg v "$1" --arg c "$2" '{verdict:$v, step:"step-01-x", commit:$c, gates:[{id:"g-unit-1",class:"unit",result:"pass"}], coverage:[], proxies_used:[], deferred:[], decisions_taken:[], pending_decisions:[], residual_risks:[]}'; }
@@ -118,7 +124,7 @@ check "es: FAIL without commit -> no resume point" '.result.resumePoint == null 
 
 # resume entry checks (fail closed before any model launch)
 out="$(wf "{\"resume\":{\"from\":\"review\",\"commit\":\"$CX\"}}" '{}')"
-check "es resume: unrelated commit -> blocked, no launch" '.env.status == "blocked" and .result.stage == "resume" and (.result.reason | test("does not descend")) and .calls == ["gates","resume-check","persist"]' "$out"
+check "es resume: unrelated commit -> blocked, no launch" '.env.status == "blocked" and .result.stage == "resume" and (.result.reason | test("does not descend")) and .calls == ["gates","tree-pre","resume-check","persist"]' "$out"
 out="$(wf '{"resume":{"from":"review","commit":"deadbeefdeadbeef"}}' '{}')"
 check "es resume: missing commit -> blocked" '.env.status == "blocked" and (.result.reason | test("does not exist"))' "$out"
 out="$(wf "{\"resume\":{\"from\":\"nope\",\"commit\":\"$C1\"}}" '{}')"
@@ -133,7 +139,7 @@ check "es resume: ledger without resultPath -> blocked" '.env.status == "blocked
 # resume paths
 mk_step 'test -f b'
 out="$(wf "{\"resume\":{\"from\":\"gates\",\"commit\":\"$C1\",\"workerRunId\":\"w1\"}}" "{\"review-0\":$REV_PASS}")"
-check "es resume gates: gates re-run, reviewed, done" '.env.status == "done" and .calls == ["gates","resume-check","resume-gates","review-0","ledger","persist"] and .result.ledger.gates[0].result == "pass" and .result.resumedFrom == "gates"' "$out"
+check "es resume gates: gates re-run, reviewed, done" '.env.status == "done" and .calls == ["gates","tree-pre","resume-check","resume-gates","review-0","tree-review","ledger","persist"] and .result.ledger.gates[0].result == "pass" and .result.resumedFrom == "gates"' "$out"
 mk_step false
 out="$(wf "{\"resume\":{\"from\":\"gates\",\"commit\":\"$C1\",\"workerRunId\":\"w1\"}}" '{}')"
 check "es resume gates: still failing -> resume from fix" '.env.status == "failed" and .result.stage == "gates" and .result.resumePoint.from == "fix" and .result.resumePoint.workerRunId == "w1"' "$out"
@@ -154,7 +160,7 @@ check "es: ledger failure after PASS -> resume from ledger" '.env.status == "blo
 args_json="$(jq -c '.result.resumePoint.args | del(.stepFile, .planDir)' <<< "$out")"
 ledger "$PD/PROGRESS.md" "" "" $'## Steps\n- [ ] [step-01-x](./step-01-x.md)'
 out="$(wf "$args_json" '{}')"
-check "es resume ledger: applies prior ledger, no model launch" '.env.status == "done" and .calls == ["gates","resume-check","resume-read","ledger","persist"] and .result.ledgerApply.applied.ticked == ["step-01-x"]' "$out"
+check "es resume ledger: applies prior ledger, no model launch" '.env.status == "done" and .calls == ["gates","tree-pre","resume-check","resume-read","ledger","persist"] and .result.ledgerApply.applied.ticked == ["step-01-x"]' "$out"
 echo "{\"ledger\":{\"step\":\"step-01-x\",\"commit\":\"$C0\"}}" > "$RA/other.json"
 out="$(wf "{\"resume\":{\"from\":\"ledger\",\"commit\":\"$C1\",\"resultPath\":\"$RA/other.json\"}}" '{}')"
 check "es resume ledger: prior ledger for another commit -> blocked" '.env.status == "blocked" and (.result.reason | test("not '"$C1"'"))' "$out"
@@ -162,7 +168,7 @@ check "es resume ledger: prior ledger for another commit -> blocked" '.env.statu
 # ci resume: reads CI bound to the resume commit (stub gh from scripts.test.sh), then ticks with a bare ledger
 mk_step true
 out="$(STUB_HEAD="$C1" STUB_CHECKS='[{"name":"a","bucket":"pass"}]' PI_WF_GH="$T/bin/gh" wf "{\"pr\":1,\"resume\":{\"from\":\"ci\",\"commit\":\"$C1\"}}" '{}')"
-check "es resume ci: green -> done, no model launch" '.env.status == "done" and .calls == ["gates","resume-check","ci","ledger","persist"] and .result.ledgerApply.applied.ticked == ["step-01-x"]' "$out"
+check "es resume ci: green -> done, no model launch" '.env.status == "done" and .calls == ["gates","tree-pre","resume-check","ci","ledger","persist"] and .result.ledgerApply.applied.ticked == ["step-01-x"]' "$out"
 mk_step true
 out="$(STUB_HEAD="$C0" STUB_CHECKS='[{"name":"a","bucket":"pass"}]' PI_WF_GH="$T/bin/gh" wf "{\"pr\":1}" "{\"implement\":$IMPL_OK,\"review-0\":$REV_PASS}")"
 check "es: stale CI -> resume from ci" '.env.status == "blocked" and .result.stage == "ci" and .result.resumePoint.from == "ci" and .result.resumePoint.args.pr == 1' "$out"

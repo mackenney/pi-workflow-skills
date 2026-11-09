@@ -22,14 +22,14 @@ Read first, in this order: the repo instruction files already in your context, t
 Implement the whole step, not a slice. A structural step owns one subsystem; you may restructure inside it, you may not change an externally consumed interface, schema, permission, ownership, file mode, or visibility/selection path unless the step file says so. Anything in the "hard splits" list of `step-contract` that the step did not declare is out of scope: stop and escalate.
 
 Gates:
-- Run every gate in the sidecar that is not `n/a`, with the exact command, before you report. The runtime re-runs them independently; your report does not decide the verdict.
-- You may add gates. You may not weaken, narrow, skip or replace one. If a gate is wrong or unrunnable, the verdict is `BLOCKED` with the exact error; do not substitute a cheaper check.
+- Run every gate in the sidecar that is not `n/a` or `deferred`, with the exact command, before you report. The runtime re-runs them independently; your report does not decide the verdict.
+- You may add gates. You may not weaken, narrow, skip or replace one. If a gate is wrong or unrunnable, the verdict is `FAIL` with the exact error and the reason under `pending_decisions` (`step-contract`); do not substitute a cheaper check.
 - A `--print`, `--dry-run`, plan or grep is a proxy. Use one only where the sidecar marks `proxy: true`, and record it in `proxies_used`. If this step touches a Dockerfile, packaging manifest, lockfile or bundle spec, run the real build and probe the built artifact.
 - For every direct-test gate (G-unit), prove the test fails without your change: `git worktree add /tmp/pre-<step> <base-commit>` and run the test there. Never `git stash`.
 - Exercise every row of the step's coverage matrix (profiles, selectors, flags, non-default paths). "Green on the paths I happened to run" is a `FAIL`.
 - A gate you cannot run in this step is `deferred`: name it, who owes it, and why. It becomes an `open` row in the ledger and blocks plan completion until discharged or a human waives it. You cannot waive.
 
-Commit with `step-NN: <name>` (imperative, ≤72 chars, non-interactive git, guard with a timeout). Do not leave staged, uncommitted work. Do not edit PROGRESS.md; report ledger rows in your verdict.
+Commit with `step-NN: <name>` (imperative, ≤72 chars, non-interactive git, guard with a timeout). Do not leave staged, uncommitted work (the workflow fails the step if the tree is not clean after you). Stay on the branch you were given (never `git checkout <sha>` or `git switch --detach`), and never edit `.gitignore`, `.git/info/exclude` or git config to hide files. Do not edit PROGRESS.md; report ledger rows in your verdict.
 
 Decisions: if implementation requires a product, architecture or scope decision the step did not approve, call `contact_supervisor` with `reason: "need_decision"` and wait. Do not end with a question. Do not send routine completion updates.
 
