@@ -187,7 +187,8 @@ repo the plan targets). Procedure A does not branch: the step commits on the cur
 block in A1 or A2 sets `resumePoint` to the incoming `resume` (same `from`, `commit`, args, fresh
 `stageDir`) so the next attempt can be launched from this run's `brief.json`. Parse the sidecar
 (`jq . <sidecar>`). Unreadable, invalid JSON or no `gates` array → result `BLOCKED` ("gate sidecar
-unusable"), go to A7. Check it against this step's plan.json entry (only this step: whole-plan
+unusable"), go to A7. No runnable gate (a `cmd`, `result` not `n/a`/`deferred`) → `BLOCKED` ("no
+runnable gates"), A7, before any dispatch (gates.sh would refuse it only after the worker ran). Check it against this step's plan.json entry (only this step: whole-plan
 `validate-plan.sh` fails once ledger rows are discharged or waived):
 `jq -n --slurpfile c <sidecar> --slurpfile p <planDir>/plan.json '$c[0] as $c | [$p[0].steps[] | select(.id == $c.step)] | length == 1 and (.[0].gates == $c.gates) and ((.[0].coverage // []) == ($c.coverage // [])) and (.[0].tier == $c.tier)'`
 prints anything but `true` → `BLOCKED` ("sidecar drifted from plan.json"), A7. Freeze it before any dispatch:
@@ -269,7 +270,7 @@ A worker that ends with `NEEDS-DECISION:` instead: ask the human (quote the bloc
      gates, commit}` (ignore them, Setup). Ignore rules changed → `BLOCKED` at `gates` (Setup).
    - `gates.sh <stepFile> <commit> <sidecarSha> <repo> --stage <stageDir> [--wtdir <wtdir>]
      --ignore-sha <ignoreSha>` → `<stageDir>/gates[-fix-N].json`. Error without `results` → Setup,
-     "`gates.sh` outcomes". A failing gate → result `FAIL` ("worker claimed PASS, gates failed:
+     "`gates.sh` outcomes". A failing gate → result `FAIL` at `implement` (`fix` inside a fix round) ("worker claimed PASS, gates failed:
      <ids>"), `resumePoint {from: gates}` (environment) with alternative `{from: fix}`; inside a fix
      round the primary is `fix` and the alternative `gates`.
 
@@ -327,7 +328,9 @@ Write it to `<stageDir>/step-verdict.json` and run `check-block.sh step-verdict`
   ```
   (`from: ci|ledger`: the ledger object comes from `prior.ledger`; its `step` must be the sidecar's
   `step`, else `BLOCKED` at `ledger` without running ledger-apply, which would tick the wrong
-  step.) `ok: false` on a PASS step → `BLOCKED` at `ledger`, `resumePoint {from: ledger}`.
+  step. `from: ci` with no `prior.ledger`: the step's rows were applied when its review passed, so
+  pass `{step: <sidecar step>, commit, tick, deferred: [], proxies_used: [], decisions_taken: [],
+  pending_decisions: []}`, which only ticks it, as pi.) `ok: false` on a PASS step → `BLOCKED` at `ledger`, `resumePoint {from: ledger}`.
 
 **A7. Persist and report.** Write `<stageDir>/result.json`:
 `{state: PASS|FAIL|BLOCKED, stage?, reason?, verdict, review?, gates?, ci?, ledger?, ledgerApply?,
@@ -424,7 +427,7 @@ are unmerged. Per step, `key` = the sidecar's `step` (the step file basename wit
    - gates.sh "sidecar changed" or "ignore rules changed" → `BLOCKED` at `gates` (`resumeFrom:
      gates` once restored, the reason in `error`); other gates.sh error without `results` →
      `BLOCKED` at `gates` (`resumeFrom: gates`);
-   - claimed PASS but a gate failed → `FAIL` at `gates` (`resumeFrom: gates`, alt `fix`);
+   - claimed PASS but a gate failed → `FAIL` at `implement` (`resumeFrom: gates`, alt `fix`; as pi);
    - review crashed twice → `BLOCKED` at `review` (`resumeFrom: review`); review FAIL → `FAIL` at
      `review` (`resumeFrom: fix`); else `PASS`.
    Write `brief.json` (Setup, "Envelope"; as pi's `execute-wave.js`): `stage: "execute-wave"`;
@@ -500,9 +503,15 @@ echo '{"planDir":"<planDir>","pr":<pr or omit>,"repo":"<repo>","waitSeconds":0}'
 
 With `pr`, CI is bound to `git rev-parse HEAD` in `repo` (or the plan dir); pass `expectSha` to pin
 another commit. Write the JSON to `<stageDir>/result.json` and the envelope to `brief.json`
-(`stage: "done-check"`, Setup "Envelope"): `ok` → `done`; no step attempted in this run →
-`blocked`; unchecked steps, ledger errors or red CI → `failed` (your work); only open ledger rows → `needs-decision` (the human discharges or waives); otherwise
-`blocked`. Do not report completion, soften the wording, or write waivers yourself.
+(`stage: "done-check"`, Setup "Envelope"). `status`, first match: `ok` → `done`; an execute run
+that stopped before dispatching any step (Pre-Flight or A1 block) → `blocked` (a standalone
+done-check skips this rule); unchecked steps, ledger errors or red CI → `failed` (your work); only
+open ledger rows → `needs-decision` (the human discharges or waives); otherwise `blocked`.
+Actionables (as pi's `terminal-gate.js`, max 12): each unchecked step → `fix` "unfinished step:
+<s>" (ref `<ledgerPath>#steps`); each open deferred or disabled row → `decision` "open row: <item>
+(discharge, or the human waives it)"; each error → `fix`; CI not green → "CI <state>[: <failing
+names>]", `fix` when `red`, else `info`; for the stopped-before-dispatch case, first a `fix` naming
+that block. `artifacts.primary` = `ledgerPath`. Do not report completion, soften the wording, or write waivers yourself.
 
 ---
 

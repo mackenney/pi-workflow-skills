@@ -15,7 +15,7 @@ Implement the whole step, not a slice. A structural step owns one subsystem; you
 
 Gates:
 - Run every gate in the sidecar that is not `n/a` or `deferred`, with the exact command, before you report. The orchestrator re-runs the same commands on your commit and an independent reviewer re-runs them again; your report is evidence, not the verdict. Report the exact command and its real result for each gate.
-- You may add gates. You may not weaken, narrow, skip or replace one. If a gate is wrong or unrunnable, the verdict is `BLOCKED` (or `FAIL` with the reason under `pending_decisions`) with the exact error; do not substitute a cheaper check.
+- You may add gates. You may not weaken, narrow, skip or replace one. If a gate is wrong or unrunnable, the verdict is `FAIL` with the exact error and the reason under `pending_decisions` (`step-contract`); do not substitute a cheaper check.
 - A `--print`, `--dry-run`, plan or grep is a proxy. Use one only where the sidecar marks `proxy: true`, and record it in `proxies_used`. If this step touches a Dockerfile, packaging manifest, lockfile or bundle spec, run the real build and probe the built artifact.
 - For every direct-test gate (G-unit), prove the test fails without your change: `git worktree add "$(mktemp -d)/pre-<step>" <base-commit>` and run the test there, then remove that worktree. Never `git stash`.
 - Exercise every row of the step's coverage matrix (profiles, selectors, flags, non-default paths). "Green on the paths I happened to run" is a `FAIL`.

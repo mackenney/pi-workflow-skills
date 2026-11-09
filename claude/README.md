@@ -35,6 +35,19 @@ prose steering replaces enforcement and the guarantees are weaker.
 | `terminal-gate` | Unchanged script, run through Bash | — |
 | Tier → model via `agentOverrides` | `model:` + `effort:` written into each agent file | Re-binding a tier means editing the agent files |
 
+Behaviour that differs from pi on purpose (same input, different path):
+
+| Area | pi | Claude Code variant | Why |
+|---|---|---|---|
+| Review loop after an escalation | `NEEDS_DECISION`, stop | Next round when the fix changed code and rounds remain; the run still ends `NEEDS_DECISION` | The fixes that were made get reviewed before the human decides |
+| Nits | A nits-only round is `PASS`, nothing fixed | `trivial`/`all` fix nits in a nits-only pass (no fact-check, no re-review); `FIXED_UNREVIEWED` when it changed code | The scope words promise nits; the state says they were not re-reviewed |
+| Wave logic conflict | Revert the merge, run the steps in order through `execute-step.js` | Abort the merge, keep the lane, resume it from `fix` in the main checkout (`executor` B.7.2) | Keeps the lane's work; the worker sees both sides |
+| Merged lane resumed from `review` | Resumes from `review` | B.8: from `gates` when the lane's merge was not a fast-forward | The merge commit is a tree no one has gated |
+| CI on a `from: ledger` resume | Keeps the prior CI read, none if absent | Runs CI when `prior.ledger.ci` is absent and `pr` is set | A tick needs a CI read when a PR exists |
+| Investigator scouts | Standalone scouts run at standard tier | Always `wf-scout` (haiku) | Scouts only read and extract; the merge child is `wf-worker` (sonnet) |
+| Plan re-fact-check | Fresh fact-check of the fixed plan | Reuses `factcheck-0.json` prototypes; builds new ones only for gates the fix changed | Prototypes are the costly part; unchanged gates are already proven |
+| "cheap", "small", "fast model" | `ambiguous` (haiku vs DeepSeek flash) | `haiku`, `inferred` | DeepSeek is not available in Claude Code |
+
 Single-depth delegation: the main session that runs a skill is the only dispatcher. No agent in
 `claude/agents/` lists the `Agent` tool, so subagents cannot spawn subagents (Claude Code allows
 nesting by default). Every pi flow with sub-sub-agents is flattened into main-session stages. The

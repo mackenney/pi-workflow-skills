@@ -503,7 +503,7 @@ Before the final report or a blocker escalation, confirm:
 
 The coordinator runs e2e as a single-agent stage. Single depth: only the main session dispatches. Dispatch only `wf-*` agents; never fork (`subagent_type: "fork"`) or use `general-purpose`: both carry `Agent` and break single depth.
 
-1. Main session calls `Agent` with `subagent_type: "wf-worker"`. `wf-worker` does not preload this skill, so the task gives the absolute path of this file (`"${CLAUDE_SKILL_DIR}/SKILL.md"` resolved by the main session) to read first, plus the system under test, SPEC paths, review/fact-check reports, the plans directory, and the detail-file path (default `<stageDir>/e2e.md`). Pass paths, not content. Working directory is the repo (or lane worktree) named in the task.
+1. Main session calls `Agent` with `subagent_type: "wf-worker"`. `wf-worker` does not preload this skill, so the task gives the absolute path of this file (`"${CLAUDE_SKILL_DIR}/SKILL.md"` resolved by the main session) to read first, plus the system under test, SPEC paths, review/fact-check reports, the plans directory, and the detail-file path (default `<stageDir>/e2e-report.md`, as the coordinator's e2e row). Pass paths, not content. Working directory is the repo (or lane worktree) named in the task.
 2. The child follows Steps 1-8, writes the Final Report to the detail file, and ends its reply with a line `ENVELOPE:` followed by one fenced ```json block, the last content of the reply:
 
 ```json
@@ -511,6 +511,6 @@ The coordinator runs e2e as a single-agent stage. Single depth: only the main se
 ```
 
    - `status`: `done` | `needs-decision` | `failed` | `blocked`. A Blocker Report maps to `needs-decision` (with `decision` actionables) or `blocked` (nothing the user can unblock in-flow). At most 12 actionables; `kind` is `decision`, `fix` or `info`; summary at most 400 chars.
-3. The main session copies the block verbatim to `<stageDir>/brief.json` with Write, checks it with `bash "$WFS/claude/scripts/check-block.sh" envelope <stageDir>/brief.json` (with `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"`; it prints `{ok, errors}` and rejects unknown keys, a bad status, a summary over 400 chars or more than 12 actionables) and checks the detail file exists (`test -s`).
+3. The main session copies the block verbatim to `<stageDir>/brief.json` with Write, checks it with `bash "$WFS/claude/scripts/check-block.sh" envelope <stageDir>/brief.json` (with `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"`; it prints `{ok, errors}` and rejects unknown keys, a bad status, a summary over 400 chars or more than 12 actionables) and checks the detail file exists (`test -s`). It then sets `artifacts.primary` to the detail file in `brief.json` whatever the child reported (coordinator rule 5; re-run `check-block.sh envelope`).
 4. On a missing/invalid block, failed check or missing detail file, retry once with the same agent (`wf-worker`). If the retry also fails, the main session writes a `blocked` envelope to `<stageDir>/brief.json` itself, with the reason in `summary` and a `fix` actionable.
 5. If the child ended with `NEEDS-DECISION:`, the main session asks the user, then resumes the child with `SendMessage` (if SendMessage is not in your tool list, load it with ToolSearch (`select:SendMessage`)) or re-dispatches with the answer and the artifact paths.

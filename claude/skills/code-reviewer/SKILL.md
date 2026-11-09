@@ -99,6 +99,13 @@ artifact convention (keep it out of git: `.git/info/exclude`). For `round = 0 ..
 findings: <reviewDir>/round-<round-1>/synthesis.json - confirm they are resolved; do not re-raise
 resolved items."
 
+Inputs check (as pi's workflow, before any dispatch): in a coordinator stage, a missing
+`reviewDir`/stage dir, an unknown `fixScope`, `angles` outside 2–4, `maxRounds` below 1, or a model
+override that is not `haiku`/`sonnet`/`opus`/`fable` → write a `blocked` brief (R6 envelope, one
+`fix` actionable naming the bad input) and stop; standalone, ask the user instead. When `notes` is
+set, append "User notes for this stage: <notes>" to every child prompt (angles, cross-exam,
+synthesis, fact-check, fix).
+
 **R1. Angles (parallel).** One `wf-code-reviewer` per angle, all in one message:
 ```
 mode: "angle"
@@ -113,7 +120,7 @@ Last angle gets `model: <diversityModel>` when set. Record each agent id. Wait f
 notification from every angle before checking files (a check before that is not a failure).
 Notifications always arrive; do not schedule wakeups, crons or sleep loops while waiting (in `-p` a
 pending wakeup keeps the process alive until it fires). An
-angle whose file is missing or empty failed: retry each failed angle once (fresh, output `<dir>/angle-<i>-retry.md`).
+angle whose file is missing or empty failed: retry each failed angle once (fresh, same `model` and `effort` as the failed call, so the `diversityModel` lane stays on its model; output `<dir>/angle-<i>-retry.md`).
 Still missing → the round **fails** at `angles` (a missing angle is a missing perspective; never
 synthesize the survivors into a PASS). Standalone with no loop: fall back to a single-agent review
 and say so.
@@ -144,8 +151,9 @@ Run `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; bash "$WFS/scripts/cla
 at `synth` (an off-schema report is not "zero findings"). `blockers == 0 && important == 0` → state
 `PASS`, stop (no fact-check needed), except when `fixScope` is `trivial` or `all` and the synthesis
 has a non-empty `nits` array: then skip R4 (it checks blocker/important claims only, and zero claims
-fail closed) and run R5 as a nits-only pass. After it, the state is `PASS` (nits do not gate, so no
-re-review round), with the fix report recorded in the round.
+fail closed) and run R5 as a nits-only pass. After it (no re-review round: nits do not gate), the
+state is `PASS` when its `fixed` is empty, else `FIXED_UNREVIEWED` (nit fixes not re-reviewed), with
+the fix report recorded in the round.
 
 **R4. Fact-check (gate)** — only when fact-check is part of this run. `wf-fact-checker`:
 ```
@@ -177,7 +185,7 @@ Copy the block verbatim with the Write tool to `<dir>/fix-report.json` (no retyp
 nothing, put corrections in result.json); `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"; "$WFS/claude/scripts/check-block.sh" fix-report <dir>/fix-report.json` not ok
 → `FAIL` at `fix`, stop. Then (nits-only pass: R3):
 
-| `escalated` | code changed | rounds remain | next |
+| `escalated` | code changed (`fixed` non-empty) | rounds remain | next |
 |---|---|---|---|
 | any | yes | yes | next round, escalated titles in the prior-round line as "escalated, do not re-raise"; the final state is `NEEDS_DECISION` |
 | any | otherwise | | `NEEDS_DECISION`, stop |
