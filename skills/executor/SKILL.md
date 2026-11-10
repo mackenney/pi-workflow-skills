@@ -47,7 +47,7 @@ Read `AGENTS.md`/`CLAUDE.md`/`.cursorrules` at the project root. If a sidecar ga
 
 ### 5. Clean tree
 
-Both workflows block before dispatch when the checkout is not clean (`scripts/tree-check.mjs`: untracked, modified or staged files outside the plan dir, whatever your git config hides), when a sidecar drifted from plan.json, or when a step has no runnable gate. Commit or stash with the human's approval; never drop isolation. Gate by-products (`__pycache__`, coverage files) must be ignored: add them to `.git/info/exclude` before the run, never mid-run (a changed ignore set fails closed).
+Both workflows block before dispatch when the checkout is not clean (`scripts/tree-check.mjs`: untracked, modified or staged files outside the plan dir and pi-subagents' own `.pi/subagents/`, whatever your git config hides), when a sidecar drifted from plan.json, or when a step has no runnable gate. Commit or stash with the human's approval; never drop isolation. Gate by-products (`__pycache__`, coverage files) must be ignored: add them to `.git/info/exclude` before the run, never mid-run (a changed ignore set fails closed).
 
 ---
 

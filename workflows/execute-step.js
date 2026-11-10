@@ -139,7 +139,7 @@ if (!pre || (pre.error && !pre.planSha)) { result = { state: "BLOCKED", stage: "
 if (pre.drift) { result = { state: "BLOCKED", stage: "contract", reason: "sidecar drifted from plan.json: " + pre.drift, resumePoint: keepResume }; break main; }
 if (pre.error || !pre.clean) { result = { state: "BLOCKED", stage: "contract", reason: pre.error ?? "tree not clean before dispatch: " + pre.paths.slice(0, 10).join(", ") + (pre.hint ? " (" + pre.hint + ")" : ""), resumePoint: keepResume }; break main; }
 const sidecarSha = pre.hashes[sidecar];
-if (R !== undefined && !args.sidecarSha) { result = { state: "BLOCKED", stage: "contract", reason: "resume needs sidecarSha (the sidecar hash recorded at first dispatch; it is in the stopped run's resumePoint.args)", resumePoint: keepResume }; break main; }
+if (R !== undefined && !args.sidecarSha) { result = { state: "BLOCKED", stage: "contract", reason: "resume needs sidecarSha (the sidecar hash recorded at first dispatch, in the stopped run's resumePoint.args); a run that recorded none predates the check: have the human confirm the sidecar is unchanged since that run and pass the current hash " + sidecarSha, resumePoint: keepResume }; break main; }
 if (args.sidecarSha && args.sidecarSha !== sidecarSha) { result = { state: "BLOCKED", stage: "contract", reason: "sidecar changed since the stopped run; restore it, or have the human approve the new hash " + sidecarSha + " and pass it as sidecarSha", resumePoint: keepResume }; break main; }
 const baseOut = baseRef ?? pre.head;
 const reviewBase = args.reviewBase ?? (R === undefined ? pre.head : baseRef) ?? "HEAD";

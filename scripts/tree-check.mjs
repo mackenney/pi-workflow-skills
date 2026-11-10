@@ -3,8 +3,8 @@
 //  "hashFiles"?: ["/abs", ...], "drift"?: {"sidecar": "/abs", "planJson": "/abs"} | [{...}, ...]} on stdin ->
 // {"ok", "clean", "paths", "byproducts", "allByproducts", "ignoreSha", "head", "branch", "hashes", "planSha", "drift", "error"?, "hint"?}.
 // The workflows' integrity check around a worker. execute-step.js runs it before dispatch and after every worker PASS:
-// - clean: no untracked, modified or staged file outside the plan dir (scripts/lib/clean.mjs, the definition Claude
-//   Code's gates.sh shares). acceptance.verify runs gates in the checkout, so a stray file could pass a gate the commit
+// - clean: no untracked, modified or staged file outside the plan dir and pi-subagents' own .pi/subagents/
+//   (scripts/lib/clean.mjs, the definition Claude Code's gates.sh shares). acceptance.verify runs gates in the checkout, so a stray file could pass a gate the commit
 //   fails. ignoreSha from the first call, passed back, makes a worker that ignores its own files fail closed.
 // - head/branch: the commit the next gate or review would see, and whether HEAD is on a branch (null when detached).
 // - hashes/planSha: sha256 of each hashFiles entry and of all of them in order ("missing" for an absent file). The
@@ -70,7 +70,7 @@ function main() {
   const b = git("symbolic-ref", "-q", "HEAD");
   const branch = b.status === 0 ? b.stdout.trim() : null;
 
-  const d = dirtyPaths(repo, task.planDir, { stage: task.stageDir, wtdir: task.wtdir, ignoreSha: task.ignoreSha });
+  const d = dirtyPaths(repo, task.planDir, { stage: task.stageDir, wtdir: task.wtdir, ignoreSha: task.ignoreSha, runtime: [".pi/subagents"] });
   const base = { head, branch, hashes, planSha, drift };
   if (d.error) return { ok: false, clean: false, paths: [], error: d.error, ...(d.ignoreSha ? { ignoreSha: d.ignoreSha } : {}), ...base };
   const clean = d.paths.length === 0;

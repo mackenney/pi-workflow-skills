@@ -1,6 +1,6 @@
 ---
 name: executor
-description: Executes a PROGRESS.md plan wave by wave — worker and reviewer agents per step, gates re-run by script, ledger written by script — integrates wave branches, escalates blockers, and refuses to report completion until the terminal gate passes. Final execution step in the investigate→spec→plan→execute pipeline.
+description: Executes a PROGRESS.md plan wave by wave — worker and reviewer agents per step, gates and ledger by script — integrates wave branches, escalates blockers, and reports done only after the terminal gate passes. Final stage of the investigate→spec→plan→execute pipeline.
 ---
 
 # Executor Skill
@@ -195,7 +195,8 @@ prints anything but `true` → `BLOCKED` ("sidecar drifted from plan.json"), A7.
 `sha256sum <sidecar> | cut -d' ' -f1` → the current hash. `sidecarSha` supplied (always with
 `resume`, and on a lane re-run) → it must equal the current hash; absent on a fresh run → take the
 current hash. Absent with `resume` → `BLOCKED` ("resume needs the sidecar hash recorded at first
-dispatch"); not equal → `BLOCKED` ("sidecar changed since the stopped run; restore it, or have the
+dispatch; a run that recorded none predates the check: have the human confirm the sidecar is
+unchanged since that run and pass the current hash <current hash>"); not equal → `BLOCKED` ("sidecar changed since the stopped run; restore it, or have the
 human approve the new hash <current hash> and pass it as `sidecarSha`"), A7. The worker can write the
 plan dir, so every `gates.sh` call passes the value from your inputs or first hash, never one
 re-read from a file mid-run; A7 records it in `result.json` and every resume entry's `args`.

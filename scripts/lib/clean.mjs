@@ -1,13 +1,16 @@
 // Shared clean-tree definition for pi's tree-check host script and Claude Code's gates.mjs, so the two harnesses cannot
-// disagree on what "clean" means. dirtyPaths(repo, planDir, {stage, wtdir, ignoreSha}) ->
+// disagree on what "clean" means. dirtyPaths(repo, planDir, {stage, wtdir, ignoreSha, runtime}) ->
 // {paths[], byproducts[], allByproducts, ignoreSha, hint?} or {error, ignoreSha?}; never throws.
 // Untracked files are listed per file whatever the user's status.showUntrackedFiles, submodules are never ignored, and
 // fsmonitor/untracked cache are off, because each would otherwise hide dirt. Tracked files flagged assume-unchanged or
 // skip-worktree are hashed against the index, and untracked .gitignore files count even when they ignore themselves.
 // Not dirty: the plan dir; untracked sibling plan dirs (a directory next to the plan dir holding PROGRESS.md, plan.json
 // or spec.md, with nothing in the index or HEAD); `stage`; and registered worktrees under `wtdir` (lane worktrees). Only
-// worktrees under `wtdir`: a worker can register a worktree anywhere, and one inside src/ must still count. No
-// exclusion may be a symlink, the repo root, or (except the plan dir) hold tracked content.
+// worktrees under `wtdir`: a worker can register a worktree anywhere, and one inside src/ must still count. `runtime`
+// (repo-relative dirs) is the harness's own state written into the checkout: pi-subagents writes .pi/subagents/ and
+// leaves it out of its own clean check, so counting it would block every later run; a runtime dir that holds tracked
+// content, or is a symlink, is not excluded. No other exclusion may be a symlink, the repo root, or (except the plan
+// dir) hold tracked content.
 // Ignored files are never checked (gitignore gate by-products). The ignore sources outside the tree
 // (.git/info/exclude, core.excludesFile) are hashed into ignoreSha: the caller records it before dispatch and passes it
 // back after, so a worker that ignores its own files fails closed.
@@ -29,7 +32,7 @@ export function dirtyPaths(repo, planDir, opt = {}) {
   try { return dirty(repo, planDir, opt); } catch (e) { return { error: e.message }; }
 }
 
-function dirty(repo, planDir, { stage, wtdir, ignoreSha }) {
+function dirty(repo, planDir, { stage, wtdir, ignoreSha, runtime = [] }) {
   const run = (cwd, args) => spawnSync("git", ["-C", cwd, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args],
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   const t = run(repo, ["rev-parse", "--show-toplevel"]);
@@ -57,6 +60,10 @@ function dirty(repo, planDir, { stage, wtdir, ignoreSha }) {
     else if (inside(wtdir) === "") e = "--wtdir is the repo root (" + top + ")";
   }
   if (e) return { error: e };
+  for (const r of runtime) {
+    const abs = path.join(top, r);
+    if (fs.existsSync(abs) && !isLink(abs) && inside(abs) === r && !tracked(r)) ex.add(r);
+  }
   if (wtdir) {
     const root = real(wtdir);
     for (const line of git(["worktree", "list", "--porcelain"], "worktree list").split("\n")) {

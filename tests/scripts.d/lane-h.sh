@@ -1,5 +1,5 @@
 # pi integrity checks: tree-check host script, and execute-step/execute-wave blocking a dirty tree, drift, an empty gate
-# set, plan edits, uncommitted or self-ignored work, contradictory PASSes, a resume without its sidecar hash or with
+# set, plan edits, pi-subagents' own state, uncommitted or self-ignored work, contradictory PASSes, a resume without its sidecar hash or with
 # HEAD elsewhere. Reuses lane-a's stub runtime (wf, ww, SV, RV, mk_step, g, $RA, $PD, $C0, $C1).
 
 g checkout -q main
@@ -18,6 +18,13 @@ check "tc: sidecar hash is sha256sum" '.hashes["'"$SC"'"] == "'"$(sha256sum "$SC
 echo x > "$RA/repo/stray"
 check "tc: stray file -> not clean" '.ok == false and .clean == false and .paths == ["?? stray"]' "$(tc '{"planDir":"'"$PD"'"}')"
 rm "$RA/repo/stray"
+mkdir -p "$RA/repo/.pi/subagents/artifacts" && echo x > "$RA/repo/.pi/subagents/artifacts/r.json"
+# Hermetic: a global ignore of .pi/ would hide both cases.
+tch() { GIT_CONFIG_GLOBAL=/dev/null XDG_CONFIG_HOME="$RA" tc "$1"; }
+check "tc: pi-subagents runtime state is not dirt" '.ok == true and .paths == []' "$(tch '{"planDir":"'"$PD"'"}')"
+echo x > "$RA/repo/.pi/other"
+check "tc: other .pi files still count" '.ok == false and .paths == ["?? .pi/other"]' "$(tch '{"planDir":"'"$PD"'"}')"
+rm -r "$RA/repo/.pi"
 jq '.steps[0].tier = "deep"' "$PD/plan.json" > "$RA/p.json" && cp "$PD/plan.json" "$RA/plan.bak" && mv "$RA/p.json" "$PD/plan.json"
 check "tc: drift in tier" '.ok == false and (.drift | test("tier"))' "$(tc '{"planDir":"'"$PD"'","drift":[{"sidecar":"'"$SC"'","planJson":"'"$PD"'/plan.json"}]}')"
 mv "$RA/plan.bak" "$PD/plan.json"
@@ -68,7 +75,7 @@ check "es: review PASS with a P1 finding -> fix round" '.env.status == "done" an
 
 # execute-step: resume guards
 out="$(wf "{\"sidecarSha\":null,\"resume\":{\"from\":\"review\",\"commit\":\"$C1\"}}" '{}')"
-check "es resume: no sidecarSha -> blocked" '.env.status == "blocked" and (.result.reason | test("needs sidecarSha")) and .result.resumePoint.from == "review"' "$out"
+check "es resume: no sidecarSha -> blocked" '.env.status == "blocked" and (.result.reason | test("needs sidecarSha.*pass the current hash '"$(sha256sum "$SC" | cut -d' ' -f1)"'")) and .result.resumePoint.from == "review"' "$out"
 out="$(wf "{\"sidecarSha\":\"$(printf 'a%.0s' {1..64})\",\"resume\":{\"from\":\"review\",\"commit\":\"$C1\"}}" '{}')"
 check "es resume: sidecar hash changed -> blocked" '.env.status == "blocked" and (.result.reason | test("sidecar changed since"))' "$out"
 out="$(wf "{\"resume\":{\"from\":\"gates\",\"commit\":\"$C0\"}}" '{}')"
