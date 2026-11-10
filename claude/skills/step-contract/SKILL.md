@@ -1,6 +1,6 @@
 ---
 name: step-contract
-description: "Shared vocabulary for planner, synthesizer, workers, step reviewer and fact-checker: gate classes, coverage matrix, Proxy Rule, First-Artifact Rule, hard-splits, tier→scope, the step-NN.gates.json sidecar, STEP-VERDICT/REVIEW-VERDICT blocks and the PROGRESS.md ledger row grammar. Knowledge only, preloaded by the wf-* agents."
+description: "Shared vocabulary for planners, workers, reviewers and fact-checkers: gate classes, coverage matrix, Proxy and First-Artifact Rules, hard splits, tier→scope, the gates.json sidecar, STEP-VERDICT/REVIEW-VERDICT blocks and ledger row grammar. Knowledge only, preloaded by the wf-* agents."
 user-invocable: false
 ---
 

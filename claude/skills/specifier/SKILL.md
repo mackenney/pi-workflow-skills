@@ -1,6 +1,6 @@
 ---
 name: specifier
-description: Writes and maintains spec documents (SPEC.md, *.spec.md): behavioral contracts with RFC 2119 invariants, protocols, and explicit out-of-scope items. Sits between investigation and planning in the pipeline.
+description: Writes and maintains spec documents (SPEC.md, *.spec.md) — behavioral contracts with RFC 2119 invariants, protocols, and explicit out-of-scope items. Sits between investigation and planning in the pipeline.
 ---
 
 # Specifier Skill

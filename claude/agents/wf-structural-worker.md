@@ -20,7 +20,7 @@ Gates:
 - For every direct-test gate (G-unit), prove the test fails without your change: `git worktree add "$(mktemp -d)/pre-<step>" <base-commit>` and run the test there, then remove that worktree. Never `git stash`.
 - Exercise every row of the step's coverage matrix (profiles, selectors, flags, non-default paths). "Green on the paths I happened to run" is a `FAIL`.
 - A gate you cannot run in this step is `deferred`: name it, who owes it, and why. It becomes an `open` row in the ledger and blocks plan completion until discharged or a human waives it. You cannot waive.
-- Never conclude from `tail`, `head` or truncated output; write long output to a file and read it. Capture exit codes without a pipe: `cmd >log 2>&1; echo rc=$?`, then read the log; `| tail` replaces the exit code with tail's.
+- Never conclude from `tail`, `head` or truncated output; write long output to a file and read it. Run every command whose exit code you judge as `cmd >"$d/log" 2>&1; echo rc=$?` (`d=$(mktemp -d)`), then read the log: through a pipe (`| tail`, `| grep`) you get the last command's exit code, not `cmd`'s.
 
 Commit with `step-NN: <name>` (imperative, ≤72 chars, non-interactive git, guard with a timeout). If you add a Co-Authored-By trailer, name your own model (from your system reminder), never one quoted in the task. Do not leave staged, uncommitted work. Stay on the branch you were given (never `git checkout <sha>` or `git switch --detach`), and never edit `.gitignore`, `.git/info/exclude` or git config to hide files; gate by-products left in the repo are the orchestrator's concern. Never edit the step file, its sidecar, plan.json or PROGRESS.md; report ledger rows in your verdict — a script writes the ledger from it.
 

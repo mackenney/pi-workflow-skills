@@ -259,3 +259,30 @@ o="$(inst "$CI/real/claude-install.sh" --dir "$CI/t5")"
 if grep -q "^conflict  $CI/t5/skills/sk  (dangling symlink to $CI/gone/claude/skills/sk.*rm '$CI/t5/skills/sk'" <<< "$o" && [ "$(readlink "$CI/t5/skills/sk")" = "$CI/gone/claude/skills/sk" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: install: dangling link left with a hint"; echo "$o"; fi
 o="$(inst "$CI/real/claude-install.sh" --dir "$CI/t5" --uninstall)"
 if grep -q "^skipped   $CI/t5/skills/sk  (dangling symlink to .*rm '$CI/t5/skills/sk'" <<< "$o" && [ -L "$CI/t5/skills/sk" ] && grep -q "^removed   $CI/t5/agents/wf-a.md" <<< "$o"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: install: uninstall leaves a dangling link with a hint"; echo "$o"; fi
+
+# Frontmatter of the Claude variants (claude/STYLE.md): key order, name, strict-YAML-safe description of 150-300
+# chars, tier effort.
+fm="$(node - "$ROOT/claude" <<'JS'
+const fs = require("fs"), path = require("path");
+const root = process.argv[2], bad = [];
+const EFFORT = { fable: "high", opus: "medium", sonnet: "medium", haiku: "low" };
+const files = [...fs.readdirSync(root + "/skills").map((d) => ["skill", d, root + "/skills/" + d + "/SKILL.md"]),
+  ...fs.readdirSync(root + "/agents").map((f) => ["agent", f.replace(/\.md$/, ""), root + "/agents/" + f])];
+for (const [kind, name, f] of files) {
+  const m = fs.readFileSync(f, "utf8").match(/^---\n([\s\S]*?)\n---\n/);
+  if (!m) { bad.push(f + ": no frontmatter"); continue; }
+  const kv = m[1].split("\n").map((l) => { const i = l.indexOf(": "); return [l.slice(0, i), l.slice(i + 2)]; });
+  const o = Object.fromEntries(kv), keys = kv.map((x) => x[0]).join(",");
+  const want = kind === "skill" ? /^name,description(,user-invocable)?$/ : /^name,description,tools,model,effort(,skills)?$/;
+  if (!want.test(keys)) bad.push(f + ": keys " + keys);
+  if (o.name !== name) bad.push(f + ": name " + o.name);
+  let d = o.description ?? "";
+  if (d.startsWith('"')) { try { d = JSON.parse(d); } catch { bad.push(f + ": quoted description does not parse"); } }
+  else if (/: | #|^[\[{&*!|>'%@`]/.test(d)) bad.push(f + ": unquoted description is not plain YAML");
+  if (d.length < 150 || d.length > 300) bad.push(f + ": description is " + d.length + " chars");
+  if (kind === "agent" && EFFORT[o.model] !== o.effort) bad.push(f + ": effort " + o.effort + " for " + o.model);
+}
+console.log(JSON.stringify({ bad }));
+JS
+)"
+check "claude frontmatter follows STYLE.md" '.bad == []' "$fm"

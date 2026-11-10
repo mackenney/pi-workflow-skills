@@ -71,7 +71,7 @@ single-depth `Agent` dispatch.
 | `wf-code-reviewer` | opus / medium | Read, Grep, Glob, Bash, Write | code-reviewer | `wf-code-reviewer` |
 | `wf-fact-checker` | opus / medium | Read, Grep, Glob, Bash, Write, WebSearch, WebFetch | fact-checker, step-contract | `wf-fact-checker` (`source_check` → WebSearch + WebFetch) |
 | `wf-worker` | sonnet / medium | Read, Grep, Glob, Bash, Edit, Write | step-contract | builtin `worker` + `delegate` (standard tier) |
-| `wf-scout` | haiku | Read, Grep, Glob, Bash, Write | — | builtin `scout` |
+| `wf-scout` | haiku / low | Read, Grep, Glob, Bash, Write | — | builtin `scout` |
 | `wf-researcher` | sonnet / medium | Read, Write, WebSearch, WebFetch | — | builtin `researcher` |
 
 On Linux and macOS, Claude Code gives a subagent `Grep`/`Glob` only when its `tools` list names them
@@ -86,6 +86,8 @@ fast/standard/deep/frontier → haiku/sonnet/opus/fable. No agent sets `omitClau
 (`inheritGlobalContext: false`) they also see `~/.claude/CLAUDE.md`.
 
 ## Conventions the skills share
+
+Body layout, procedure-step and agent-file rules: [`STYLE.md`](STYLE.md).
 
 - **Repo path.** Skills locate this repo's scripts with
   `WFS="$(readlink -f "${CLAUDE_SKILL_DIR}/../../..")"` (works whether the skill dir is the symlink

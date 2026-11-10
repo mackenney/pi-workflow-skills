@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Competitive multi-agent code review of uncommitted changes, a branch or a GitHub PR. Independent reviewers find issues, cross-examine each other (skip with no-x-check), a synthesis merges them into actionable feedback; optionally fact-checked, fixed in bounded rounds, posted to GitHub or saved. Use when changes are ready for critique.
+description: Competitive multi-agent code review of uncommitted changes, a branch or a GitHub PR — independent reviewers, cross-examination and a synthesis of actionable findings, optionally fact-checked, fixed in bounded rounds, posted or saved. Use when changes are ready for critique.
 ---
 
 # Code Reviewer Skill

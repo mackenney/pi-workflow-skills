@@ -1,6 +1,6 @@
 ---
 name: coordinator
-description: Installs a session-wide coordination protocol — compiles the user's prose chain (e.g. "investigator -> specifier -> fact-checker -> fix / planner -> fact-checker -> fix / executor") into stages backed by the pipeline skills and wf-* agents, lists what it understood, runs it, and steers by short stage envelopes while details stay in files.
+description: Installs a session-wide coordination protocol — compiles the user's prose chain (e.g. "investigator -> planner -> fact-checker -> fix / executor") into stages run by the pipeline skills and wf-* agents, confirms it, runs it, and steers by short stage envelopes.
 ---
 
 # Coordinator Skill
