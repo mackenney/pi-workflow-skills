@@ -46,6 +46,7 @@ Behaviour that differs from pi on purpose (same input, different path):
 | CI on a `from: ledger` resume | Keeps the prior CI read, none if absent | Runs CI when `prior.ledger.ci` is absent and `pr` is set | A tick needs a CI read when a PR exists |
 | Investigator scouts | Standalone scouts run at standard tier | Always `wf-scout` (haiku) | Scouts only read and extract; the merge child is `wf-worker` (sonnet) |
 | Plan re-fact-check | Fresh fact-check of the fixed plan | Reuses `factcheck-0.json` prototypes; builds new ones only for gates the fix changed | Prototypes are the costly part; unchanged gates are already proven |
+| Done-check after a run that dispatched nothing | `failed` (open steps) | `blocked` when Pre-Flight or A1 stopped the run before any step was dispatched (`executor` Procedure D) | Nothing was attempted: the fix is the human's (artifact, checkout), not more work. pi's `terminal-gate.js` sees only the ledger, so it cannot tell |
 | "cheap", "small", "fast model" | `ambiguous` (haiku vs DeepSeek flash) | `haiku`, `inferred` | DeepSeek is not available in Claude Code |
 
 Single-depth delegation: the main session that runs a skill is the only dispatcher. No agent in

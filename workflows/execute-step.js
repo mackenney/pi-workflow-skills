@@ -174,7 +174,7 @@ if (R !== undefined) {
   // gates and review judge the checkout, so it must already be this commit on a branch; checking out the sha would
   // detach HEAD and drop whatever was integrated after it.
   if ((R.from === "gates" || R.from === "review") && (!pre.branch || pre.head !== resumeCommit)) {
-    result = { state: "BLOCKED", stage: "resume", reason: "HEAD " + String(pre.head).slice(0, 12) + (pre.branch ? "" : " (detached)") + " is not the resume commit on the working branch: move the branch to " + resumeCommit.slice(0, 12) + " (never check out a bare sha)", resumePoint: keepResume }; break main;
+    result = { state: "BLOCKED", stage: "resume", reason: "HEAD " + String(pre.head).slice(0, 12) + (pre.branch ? "" : " (detached)") + " is not the resume commit " + resumeCommit.slice(0, 12) + " on the working branch: fast-forward the branch if it is behind; if it moved past the commit or diverged, the human decides (resume with commit = HEAD, or move the branch); never check out a bare sha", resumePoint: keepResume }; break main;
   }
   if (R.resultPath) {
     const rd = await safe(runs.run("resume-read", { agent: "wf-host-command", label: "Read prior result", task: JSON.stringify({ script: "write-artifact", read: R.resultPath }) }));
