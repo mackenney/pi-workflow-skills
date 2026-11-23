@@ -94,8 +94,24 @@ function dirty(repo, planDir, { stage, wtdir, ignoreSha, runtime = [] }) {
     paths.push(x);
   }
   // A .gitignore that ignores itself (or is ignored by info/exclude) hides itself and whatever it lists.
+  // One inside a directory a tracked ignore file already ignores (a virtualenv's own .gitignore under
+  // `.venv/`) hides nothing that was not ignored before, so it does not count.
+  const byTrackedRule = new Map();
+  const underTrackedIgnore = (p) => {
+    const parts = p.split("/").slice(0, -1);
+    for (let i = 1; i <= parts.length; i++) {
+      const d = parts.slice(0, i).join("/");
+      if (!byTrackedRule.has(d)) {
+        const r = run(top, ["check-ignore", "-v", "--", d + "/"]);
+        const source = r.status === 0 ? r.stdout.split(":")[0] : "";
+        byTrackedRule.set(d, source !== "" && !path.isAbsolute(source) && tracked(source));
+      }
+      if (byTrackedRule.get(d)) return true;
+    }
+    return false;
+  };
   for (const p of z(git(["ls-files", "-z", "--others", "--", ":(top,glob)**/.gitignore", ...spec.slice(1)], "ls-files --others")))
-    if (!paths.includes("?? " + p) && !sibling(p)) paths.push("?? " + p);
+    if (!paths.includes("?? " + p) && !sibling(p) && !underTrackedIgnore(p)) paths.push("?? " + p);
   const flagged = z(git(["ls-files", "-v", "-z", "--", ...spec], "ls-files -v"))
     .filter((x) => x[0] === "S" || /[a-z]/.test(x[0])).map((x) => ({ tag: x[0], p: x.slice(2) }));
   if (flagged.length) {
